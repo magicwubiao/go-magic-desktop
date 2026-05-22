@@ -67,13 +67,22 @@ jobs:
           cd go-magic
           go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
 
-      - name: Copy backend to resources
+      - name: Copy backend to resources (Unix)
+        if: matrix.platform != 'windows-latest'
         env:
-          EXT: ${{ matrix.platform == 'windows-latest' && '.exe' || '' }}
+          EXT: ''
         run: |
           mkdir -p src-tauri/resources
-          cp go-magic/go-magic${{ env.EXT }} src-tauri/resources/
+          cp go-magic/go-magic src-tauri/resources/
           ls -la src-tauri/resources/
+
+      - name: Copy backend to resources (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources
+          Copy-Item go-magic/go-magic.exe -Destination src-tauri/resources/
+          Get-ChildItem src-tauri/resources/
 
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli
