@@ -1,0 +1,14 @@
+{
+  "name": "go-magic-desktop",
+  "version": "1.0.0",
+  "description": "Go Magic Desktop App - Tauri",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "build:web": "cd ../go-magic/web && npm run build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

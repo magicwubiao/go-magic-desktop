@@ -1,0 +1,24 @@
+[package]
+name = "go-magic-desktop"
+version = "1.0.0"
+description = "Go Magic Desktop App - Tauri"
+authors = ["Go Magic Team"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.75"
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = [] }
+tauri-plugin-shell = "2.0.0"
+tauri-plugin-fs = "2.0.0"
+tauri-plugin-os = "2.0.0"
+tauri-plugin-process = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = []

@@ -1,0 +1,60 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Go Magic",
+  "version": "1.0.0",
+  "identifier": "com.gomagic.desktop",
+  "build": {
+    "beforeBuildCommand": "cd ../go-magic/web && npm run build",
+    "beforeDevCommand": "cd ../go-magic/web && npm run dev",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../go-magic/internal/server/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "fullscreen": false,
+        "height": 900,
+        "resizable": true,
+        "title": "Go Magic",
+        "width": 1400,
+        "minWidth": 1000,
+        "minHeight": 700,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "copyright": "",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "longDescription": "Go Magic - AI-powered development assistant",
+    "shortDescription": "Go Magic Desktop",
+    "targets": "all",
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": false
+      }
+    }
+  }
+}

@@ -1,0 +1,161 @@
+name: Build Desktop App
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # 构建桌面应用（Windows, macOS, Linux）
+  build-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        include:
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: go-magic-desktop-macos
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact_name: go-magic-desktop-linux
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: go-magic-desktop-windows
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout desktop repo
+        uses: actions/checkout@v4
+
+      - name: Checkout go-magic
+        uses: actions/checkout@v4
+        with:
+          repository: magicwubiao/go-magic
+          path: go-magic
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install frontend dependencies
+        run: cd go-magic/web && npm ci
+
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libglib2.0-dev
+
+      - name: Build Tauri app
+        run: |
+          cd src-tauri
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare bundle output (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          mkdir -p bundle-output
+          cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop bundle-output/ 2>/dev/null || true
+
+      - name: Prepare bundle output (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bundle-output
+          Copy-Item "src-tauri/target/${{ matrix.target }}/release/go-magic-desktop.exe" -Destination "bundle-output/" -ErrorAction SilentlyContinue
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: bundle-output/*
+
+  # 构建 Go CLI 多平台版本
+  build-go-cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout go-magic
+        uses: actions/checkout@v4
+        with:
+          repository: magicwubiao/go-magic
+          path: go-magic
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install Node.js for web build
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Web UI
+        run: |
+          cd go-magic/web
+          npm ci
+          npm run build
+
+      - name: Copy web dist for embedding
+        run: |
+          mkdir -p go-magic/internal/server/dist
+          cp -r go-magic/web/dist/* go-magic/internal/server/dist/
+
+      - name: Build Go CLI
+        env:
+          EXT: ${{ matrix.goos == 'windows' && '.exe' || '' }}
+        run: |
+          cd go-magic
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -o go-magic-${{ matrix.goos }}-${{ matrix.goarch }}${{ env.EXT }} ./cmd/magic
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: go-magic/go-magic-*
+
+  # 创建发布包
+  create-release:
+    needs: [build-desktop, build-go-cli]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*.exe artifacts/**/*.AppImage artifacts/**/*.deb artifacts/**/*.rpm artifacts/**/go-magic-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
