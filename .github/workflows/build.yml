@@ -123,10 +123,8 @@ jobs:
           npm ci
           npm run build
 
-      - name: Copy web dist for embedding
-        run: |
-          mkdir -p go-magic/internal/server/dist
-          cp -r go-magic/web/dist/* go-magic/internal/server/dist/
+      - name: Verify web dist exists
+        run: ls -la go-magic/internal/server/dist/
 
       - name: Build Go CLI
         env:
