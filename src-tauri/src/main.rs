@@ -2,6 +2,8 @@
 
 use std::process::{Command, Child};
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 use tauri::Manager;
 
 static BACKEND_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
@@ -14,13 +16,22 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             start_backend(app);
+            // 等待后端启动
+            println!("Waiting for backend to start...");
+            thread::sleep(Duration::from_secs(3));
             Ok(())
         })
-        .on_window_event(|_window, event| {
+        .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                stop_backend();
+                // 阻止默认关闭行为，我们自己处理
                 api.prevent_close();
-                let _ = _window.close();
+                
+                // 停止后端
+                stop_backend();
+                
+                // 获取 app handle 并退出整个应用
+                let app_handle = window.app_handle();
+                app_handle.exit(0);
             }
         })
         .run(tauri::generate_context!())

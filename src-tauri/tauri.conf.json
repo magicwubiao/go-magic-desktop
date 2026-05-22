@@ -6,8 +6,8 @@
   "build": {
     "beforeBuildCommand": "cd ../go-magic/web && npm run build",
     "beforeDevCommand": "cd ../go-magic/web && npm run dev",
-    "devUrl": "http://localhost:5173",
-    "frontendDist": "../go-magic/internal/server/dist"
+    "devUrl": "http://localhost:8642",
+    "frontendDist": "http://localhost:8642"
   },
   "app": {
     "windows": [

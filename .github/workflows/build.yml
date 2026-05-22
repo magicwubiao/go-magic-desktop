@@ -48,7 +48,7 @@ jobs:
           node-version: '22'
 
       - name: Install frontend dependencies
-        run: cd go-magic/web && npm ci
+        run: cd go-magic/web && npm install
 
       - name: Build Web UI
         run: |
@@ -154,7 +154,7 @@ jobs:
       - name: Build Web UI
         run: |
           cd go-magic/web
-          npm ci
+          npm install
           npm run build
 
       - name: Verify web dist exists
