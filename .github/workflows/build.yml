@@ -108,34 +108,26 @@ jobs:
 
       # ========== 前端构建 ==========
       - name: Build Web UI
-        if: github.event.inputs.skip_frontend != 'true'
         run: |
           cd go-magic/web
           npm install
           npm run build
 
-      - name: Copy Web Dist to Desktop Repo
-        if: github.event.inputs.skip_frontend != 'true'
+      - name: Verify web dist for Go embed
         run: |
-          # 复制前端构建产物到 web-dist
-          rm -rf web-dist
-          cp -r go-magic/web/dist web-dist/
-          ls -la web-dist/
-
-      - name: Verify web dist exists
-        run: |
-          if [ -d "web-dist" ]; then
-            echo "Web dist found in web-dist/"
-            ls -la web-dist/
-          elif [ -d "go-magic/web/dist" ]; then
-            echo "Web dist found in go-magic/web/dist/"
-          elif [ -d "go-magic/internal/server/dist" ]; then
-            echo "Web dist found in go-magic/internal/server/dist/"
-            rm -rf web-dist
-            cp -r go-magic/internal/server/dist web-dist/
+          if [ -d "go-magic/internal/server/dist" ]; then
+            echo "Web dist OK: go-magic/internal/server/dist/"
+            ls go-magic/internal/server/dist/ | head -5
           else
-            echo "Warning: Web dist not found"
+            echo "ERROR: go-magic/internal/server/dist/ not found!"
+            exit 1
           fi
+
+      - name: Copy Web Dist to Desktop Repo
+        run: |
+          rm -rf web-dist
+          cp -r go-magic/internal/server/dist web-dist/
+          ls -la web-dist/
 
       # ========== 后端构建 ==========
       - name: Set up Go
