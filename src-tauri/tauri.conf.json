@@ -4,10 +4,10 @@
   "version": "1.0.0",
   "identifier": "com.gomagic.desktop",
   "build": {
-    "beforeBuildCommand": "cd ../go-magic/web && npm run build",
-    "beforeDevCommand": "cd ../go-magic/web && npm run dev",
-    "devUrl": "http://localhost:5000",
-    "frontendDist": "http://localhost:5000"
+    "beforeBuildCommand": "",
+    "beforeDevCommand": "",
+    "devUrl": "",
+    "frontendDist": ""
   },
   "app": {
     "windows": [
@@ -19,7 +19,8 @@
         "width": 1400,
         "minWidth": 1000,
         "minHeight": 700,
-        "center": true
+        "center": true,
+        "visible": false
       }
     ],
     "security": {
