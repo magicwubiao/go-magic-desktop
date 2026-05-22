@@ -51,11 +51,16 @@ fn main() {
             .inner_size(1400.0, 900.0)
             .min_inner_size(1000.0, 700.0)
             .center()
-            .visible(true)
+            .focused(true)
             .build()
             .expect("Failed to create window");
             
-            println!("Window created, loading: {}", SERVER_URL);
+            // 确保窗口显示在最前面
+            let _ = window.set_always_on_top(true);
+            let _ = window.set_always_on_top(false);
+            let _ = window.set_focus();
+            
+            println!("Window created and shown, loading: {}", SERVER_URL);
             
             Ok(())
         })
