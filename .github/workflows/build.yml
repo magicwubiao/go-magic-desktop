@@ -50,6 +50,31 @@ jobs:
       - name: Install frontend dependencies
         run: cd go-magic/web && npm ci
 
+      - name: Build Web UI
+        run: |
+          cd go-magic/web
+          npm run build
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build go-magic backend
+        env:
+          EXT: ${{ matrix.platform == 'windows-latest' && '.exe' || '' }}
+        run: |
+          cd go-magic
+          go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
+
+      - name: Copy backend to resources
+        env:
+          EXT: ${{ matrix.platform == 'windows-latest' && '.exe' || '' }}
+        run: |
+          mkdir -p src-tauri/resources
+          cp go-magic/go-magic${{ env.EXT }} src-tauri/resources/
+          ls -la src-tauri/resources/
+
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli
 

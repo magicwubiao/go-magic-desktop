@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::process::Command;
+use std::process::{Command, Child};
+use std::sync::Mutex;
+use tauri::Manager;
+
+static BACKEND_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 
 fn main() {
     tauri::Builder::default()
@@ -8,67 +12,55 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
-        .setup(|_app| {
-            start_backend();
+        .setup(|app| {
+            start_backend(app);
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 stop_backend();
                 api.prevent_close();
-                let _ = window.close();
+                let _ = _window.close();
             }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-#[cfg(target_os = "windows")]
-fn start_backend() {
-    let backend_path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("go-magic.exe");
+fn start_backend(app: &tauri::App) {
+    let resource_dir = app.path().resource_dir().unwrap();
+    
+    let backend_name = if cfg!(target_os = "windows") {
+        "go-magic.exe"
+    } else {
+        "go-magic"
+    };
+
+    let backend_path = resource_dir.join(backend_name);
 
     if backend_path.exists() {
-        let _ = Command::new(backend_path)
+        match Command::new(&backend_path)
             .arg("server")
-            .spawn();
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn start_backend() {
-    let backend_path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("go-magic");
-
-    if backend_path.exists() {
-        let _ = Command::new(backend_path)
-            .arg("server")
-            .spawn();
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn start_backend() {
-    let backend_path = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("go-magic");
-
-    if backend_path.exists() {
-        let _ = Command::new(backend_path)
-            .arg("server")
-            .spawn();
+            .spawn() {
+            Ok(child) => {
+                let mut process = BACKEND_PROCESS.lock().unwrap();
+                *process = Some(child);
+                println!("Backend started: {:?}", backend_path);
+            }
+            Err(e) => {
+                eprintln!("Failed to start backend: {}", e);
+            }
+        }
+    } else {
+        eprintln!("Backend not found at: {:?}", backend_path);
     }
 }
 
 fn stop_backend() {
+    if let Ok(mut process) = BACKEND_PROCESS.lock() {
+        if let Some(mut child) = process.take() {
+            let _ = child.kill();
+            println!("Backend stopped");
+        }
+    }
 }
