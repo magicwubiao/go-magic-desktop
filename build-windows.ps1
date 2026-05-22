@@ -1,94 +1,127 @@
 # Go Magic Desktop - Windows 构建脚本
-# 使用方法：在 PowerShell 中以管理员身份运行
+# 使用方式: .\build-windows.ps1 [参数]
 
 param(
-    [switch]$SkipNSIS,
-    [switch]$SkipMSI
+    [switch]$Clean,
+    [switch]$Debug,
+    [switch]$SkipFrontend
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Go Magic Desktop Windows 构建脚本 ===" -ForegroundColor Cyan
+# 颜色定义
+function Write-Info { Write-Host "[INFO] $args" -ForegroundColor Cyan }
+function Write-Success { Write-Host "[SUCCESS] $args" -ForegroundColor Green }
+function Write-Warn { Write-Host "[WARN] $args" -ForegroundColor Yellow }
+function Write-Err { Write-Host "[ERROR] $args" -ForegroundColor Red }
 
-# 检查管理员权限
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host "警告: 建议以管理员身份运行此脚本" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Magenta
+Write-Host "Go Magic Desktop - Windows 构建" -ForegroundColor Magenta
+Write-Host "========================================" -ForegroundColor Magenta
+
+# 切换到脚本目录
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $ScriptDir
+
+# 清理
+if ($Clean) {
+    Write-Info "清理构建产物..."
+    if (Test-Path "src-tauri/target") {
+        Remove-Item -Recurse -Force "src-tauri/target"
+    }
+    Write-Success "清理完成"
 }
 
-# 1. 检查 Rust MSVC 工具链
-Write-Host "`n[1/5] 检查 Rust 安装..." -ForegroundColor Green
+# 检查依赖
+Write-Info "检查构建依赖..."
+
+# 检查 Rust
 if (-not (Get-Command rustc -ErrorAction SilentlyContinue)) {
-    Write-Host "正在安装 Rust..." -ForegroundColor Yellow
-    Invoke-Expression "& {$(Invoke-WebRequest -Uri 'https://rustup.rs' -UseBasicParsing).Content}"
-    refreshenv
+    Write-Err "Rust 未安装"
+    Write-Host "请运行: winget install Rustlang.Rust.MSVC"
+    exit 1
 }
 
-rustc --version
-cargo --version
-
-# 检查 MSVC 工具链
-$targets = cargo target list --installed
-if ($targets -notmatch "x86_64-pc-windows-msvc") {
-    Write-Host "添加 MSVC 目标..." -ForegroundColor Yellow
-    rustup target add x86_64-pc-windows-msvc
-}
-
-# 2. 检查 Node.js
-Write-Host "`n[2/5] 检查 Node.js 安装..." -ForegroundColor Green
+# 检查 Node.js
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Host "正在安装 Node.js..." -ForegroundColor Yellow
-    winget install -e --id OpenJS.NodeJS.LTS --silent
-    refreshenv
+    Write-Err "Node.js 未安装"
+    Write-Host "请运行: winget install OpenJS.NodeJS.LTS"
+    exit 1
 }
 
-node --version
-npm --version
+# 检查 Tauri CLI
+if (-not (Get-Command tauri -ErrorAction SilentlyContinue)) {
+    Write-Warn "Tauri CLI 未安装，正在安装..."
+    npm install -g @tauri-apps/cli
+}
 
-# 3. 克隆/更新代码
-Write-Host "`n[3/5] 准备源代码..." -ForegroundColor Green
-$projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $projectDir
+Write-Success "依赖检查完成"
 
-if (Test-Path ".git") {
-    Write-Host "拉取最新代码..." -ForegroundColor Yellow
-    git pull origin main
-} else {
-    Write-Host "克隆 go-magic..." -ForegroundColor Yellow
-    if (-not (Test-Path "../go-magic")) {
-        git clone https://github.com/magicwubiao/go-magic.git ../go-magic
+# 构建前端
+if (-not $SkipFrontend) {
+    Write-Info "构建前端..."
+
+    $GoMagicWeb = Join-Path $ScriptDir "..\go-magic\web"
+    if (Test-Path $GoMagicWeb) {
+        Push-Location $GoMagicWeb
+        npm install
+        npm run build
+        Pop-Location
+        Write-Success "前端构建完成"
+    } else {
+        Write-Warn "go-magic/web 目录不存在，请确保 web-dist 存在"
     }
 }
 
-# 4. 安装依赖
-Write-Host "`n[4/5] 安装依赖..." -ForegroundColor Green
-npm install
-
-# 5. 构建应用
-Write-Host "`n[5/5] 构建应用..." -ForegroundColor Green
-
-# 切换到 MSVC 工具链
-rustup default stable-x86_64-pc-windows-msvc
-
-# 构建 Tauri
-npm run build
-
-# 输出结果
-Write-Host "`n=== 构建完成 ===" -ForegroundColor Cyan
-Write-Host "`n构建产物位置:" -ForegroundColor Green
-
-$bundleDir = Join-Path $projectDir "src-tauri\target\release\bundle"
-
-if (Test-Path (Join-Path $bundleDir "nsis")) {
-    Write-Host "NSIS 安装包:" (Get-ChildItem (Join-Path $bundleDir "nsis") -Filter "*.exe" | Select-Object -ExpandProperty FullName)
+# 检查 WebView2
+Write-Info "检查 WebView2 运行时..."
+$WebView2Path = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+if (Test-Path $WebView2Path) {
+    $Version = (Get-ItemProperty -Path $WebView2Path -Name pv -ErrorAction SilentlyContinue).pv
+    Write-Success "WebView2 已安装 (版本: $Version)"
+} else {
+    Write-Warn "WebView2 未检测到"
+    Write-Host "下载地址: https://developer.microsoft.com/en-us/microsoft-edge/webview2/"
 }
 
-if (Test-Path (Join-Path $bundleDir "msi")) {
-    Write-Host "MSI 安装包:" (Get-ChildItem (Join-Path $bundleDir "msi") -Filter "*.msi" | Select-Object -ExpandProperty FullName)
+# 构建 Tauri 应用
+Write-Info "开始构建 Tauri 应用..."
+
+$BuildArgs = @("build", "--target", "x86_64-pc-windows-msvc")
+if ($Debug) {
+    $BuildArgs += "--debug"
 }
 
-Write-Host "`n直接运行文件:" -ForegroundColor Yellow
-Write-Host (Join-Path $projectDir "src-tauri\target\release\go-magic-desktop.exe")
+& tauri @BuildArgs
 
-Write-Host "`n按任意键退出..." -ForegroundColor Gray
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+if ($LASTEXITCODE -eq 0) {
+    Write-Success "构建完成！"
+
+    # 显示输出
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Magenta
+    Write-Host "构建输出:" -ForegroundColor Magenta
+    Write-Host "========================================" -ForegroundColor Magenta
+
+    $BundleDir = "src-tauri\target\release\bundle"
+
+    if (Test-Path "$BundleDir\nsis") {
+        Write-Host "NSIS 安装包:" -ForegroundColor Green
+        Get-ChildItem "$BundleDir\nsis\*.exe" | ForEach-Object { Write-Host "  $($_.Name)" }
+    }
+
+    if (Test-Path "$BundleDir\msi") {
+        Write-Host "MSI 安装包:" -ForegroundColor Green
+        Get-ChildItem "$BundleDir\msi\*.msi" | ForEach-Object { Write-Host "  $($_.Name)" }
+    }
+
+    if (Test-Path "$BundleDir\exe") {
+        Write-Host "独立可执行文件:" -ForegroundColor Green
+        Get-ChildItem "$BundleDir\exe\*.exe" | ForEach-Object { Write-Host "  $($_.Name)" }
+    }
+
+    Write-Host ""
+} else {
+    Write-Err "构建失败"
+    exit 1
+}

@@ -1,14 +1,62 @@
 {
   "name": "go-magic-desktop",
   "version": "1.0.0",
-  "description": "Go Magic Desktop App - Tauri",
+  "description": "Go Magic Desktop App - Powered by Tauri",
+  "private": true,
+  "type": "module",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
+    "dev:debug": "tauri dev --debug",
     "build": "tauri build",
-    "build:web": "cd ../go-magic/web && npm run build"
+    "build:release": "tauri build --release",
+    "build:windows": "tauri build --target x86_64-pc-windows-msvc",
+    "build:macos": "tauri build --target x86_64-apple-darwin",
+    "build:macos:arm": "tauri build --target aarch64-apple-darwin",
+    "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
+    "build:linux:arm": "tauri build --target aarch64-unknown-linux-gnu",
+    "build:web": "cd ../go-magic/web && npm run build",
+    "bundle:all": "npm run build:web && npm run build",
+    "clean": "cd src-tauri && cargo clean && rm -rf target",
+    "check": "cargo check && cargo clippy",
+    "fmt": "cargo fmt",
+    "lint": "cargo clippy -- -D warnings",
+    "test": "cargo test",
+    "update": "cargo update",
+    "info": "tauri info",
+    "icon": "tauri icon"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "@tauri-apps/plugin-os": "^2.0.0",
+    "@tauri-apps/plugin-process": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-http": "^2.0.0",
+    "@tauri-apps/plugin-log": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "keywords": [
+    "tauri",
+    "go-magic",
+    "desktop",
+    "ai",
+    "development-tools"
+  ],
+  "author": "Go Magic Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/magicwubiao/go-magic-desktop"
+  },
+  "bugs": {
+    "url": "https://github.com/magicwubiao/go-magic-desktop/issues"
   }
 }

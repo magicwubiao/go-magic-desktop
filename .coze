@@ -1,0 +1,11 @@
+[project]
+sub_id = "2e220d61"
+name = "go-magic-desktop"
+requires = ["nodejs-22", "rust-1.75"]
+project_type = "desktop"
+
+[preview]
+preview_enable = "disabled"
+
+[subprojects]
+path = ["."]

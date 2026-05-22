@@ -2,29 +2,73 @@ name: Build Desktop App
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_frontend:
+        description: 'Skip frontend build'
+        required: false
+        default: 'false'
+        type: boolean
   push:
     branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  release:
+    types: [published, created]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUST_BACKTRACE: "1"
+  RUST_LOG: "info"
 
 jobs:
+  # 代码质量检查
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Run tests
+        run: cargo test --no-fail-fast
+
   # 构建桌面应用（Windows, macOS, Linux）
   build-desktop:
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
         include:
           - platform: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: go-magic-desktop-macos
+            artifact_name: go-magic-desktop-macos-x64
+            goext: ""
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: go-magic-desktop-macos-arm64
+            goext: ""
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact_name: go-magic-desktop-linux
+            artifact_name: go-magic-desktop-linux-x64
+            goext: ""
+          - platform: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            artifact_name: go-magic-desktop-linux-arm64
+            goext: ""
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: go-magic-desktop-windows
+            artifact_name: go-magic-desktop-windows-x64
+            goext: ".exe"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -42,51 +86,87 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Cache cargo target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
 
-      - name: Install frontend dependencies
-        run: cd go-magic/web && npm install
-
+      # ========== 前端构建 ==========
       - name: Build Web UI
+        if: github.event.inputs.skip_frontend != 'true'
         run: |
           cd go-magic/web
+          npm install
           npm run build
 
+      - name: Copy Web Dist to Desktop Repo
+        if: github.event.inputs.skip_frontend != 'true'
+        run: |
+          # 复制前端构建产物到 web-dist
+          rm -rf web-dist
+          cp -r go-magic/web/dist web-dist/
+          ls -la web-dist/
+
+      - name: Verify web dist exists
+        run: |
+          if [ -d "web-dist" ]; then
+            echo "Web dist found in web-dist/"
+            ls -la web-dist/
+          elif [ -d "go-magic/web/dist" ]; then
+            echo "Web dist found in go-magic/web/dist/"
+          elif [ -d "go-magic/internal/server/dist" ]; then
+            echo "Web dist found in go-magic/internal/server/dist/"
+            rm -rf web-dist
+            cp -r go-magic/internal/server/dist web-dist/
+          else
+            echo "Warning: Web dist not found"
+          fi
+
+      # ========== 后端构建 ==========
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: true
+          cache-dependency-path: go-magic/go.sum
 
       - name: Build go-magic backend
         env:
-          EXT: ${{ matrix.platform == 'windows-latest' && '.exe' || '' }}
+          EXT: ${{ matrix.goext }}
         run: |
           cd go-magic
-          go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
+          ls -la go-magic${{ env.EXT }}
 
-      - name: Copy backend to resources (Unix)
-        if: matrix.platform != 'windows-latest'
-        env:
-          EXT: ''
+      # ========== 打包资源 ==========
+      - name: Prepare resources directory
         run: |
           mkdir -p src-tauri/resources
-          cp go-magic/go-magic src-tauri/resources/
           ls -la src-tauri/resources/
 
-      - name: Copy backend to resources (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
+      - name: Copy backend to resources
+        env:
+          EXT: ${{ matrix.goext }}
         run: |
-          New-Item -ItemType Directory -Force -Path src-tauri/resources
-          Copy-Item go-magic/go-magic.exe -Destination src-tauri/resources/
-          Get-ChildItem src-tauri/resources/
+          cp go-magic/go-magic${{ env.EXT }} src-tauri/resources/go-magic${{ env.EXT }}
+          ls -la src-tauri/resources/
 
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli
-
+      # ========== Linux 依赖 ==========
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -99,41 +179,58 @@ jobs:
             libgtk-3-dev \
             libjavascriptcoregtk-4.1-dev \
             libsoup-3.0-dev \
-            libglib2.0-dev
+            libglib2.0-dev \
+            libssl-dev \
+            libdbus-1-dev
+
+      # ========== Tauri 构建 ==========
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli
 
       - name: Build Tauri app
         run: |
           cd src-tauri
           cargo build --release --target ${{ matrix.target }}
 
-      - name: Prepare bundle output (Unix)
-        if: matrix.platform != 'windows-latest'
+      # ========== 收集产物 ==========
+      - name: Prepare bundle output
         run: |
           mkdir -p bundle-output
-          cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop bundle-output/ 2>/dev/null || true
 
-      - name: Prepare bundle output (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path bundle-output
-          Copy-Item "src-tauri/target/${{ matrix.target }}/release/go-magic-desktop.exe" -Destination "bundle-output/" -ErrorAction SilentlyContinue
+          # 复制主应用
+          if [ -f "src-tauri/target/${{ matrix.target }}/release/go-magic-desktop" ]; then
+            cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop bundle-output/
+          fi
+          if [ -f "src-tauri/target/${{ matrix.target }}/release/go-magic-desktop.exe" ]; then
+            cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop.exe bundle-output/
+          fi
+
+          # 复制安装包
+          for dir in nsis msi deb appimage dmg; do
+            if [ -d "src-tauri/target/${{ matrix.target }}/release/bundle/$dir" ]; then
+              find "src-tauri/target/${{ matrix.target }}/release/bundle/$dir" -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} bundle-output/ \;
+            fi
+          done
+
+          echo "=== Bundle output ==="
+          ls -la bundle-output/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: bundle-output/*
+          retention-days: 30
 
   # 构建 Go CLI 多平台版本
   build-go-cli:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         goos: [linux, darwin, windows]
         goarch: [amd64, arm64]
 
-    runs-on: ubuntu-latest
     steps:
       - name: Checkout go-magic
         uses: actions/checkout@v4
@@ -145,49 +242,72 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-
-      - name: Install Node.js for web build
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Build Web UI
-        run: |
-          cd go-magic/web
-          npm install
-          npm run build
-
-      - name: Verify web dist exists
-        run: ls -la go-magic/internal/server/dist/
+          cache: true
+          cache-dependency-path: go-magic/go.sum
 
       - name: Build Go CLI
         env:
           EXT: ${{ matrix.goos == 'windows' && '.exe' || '' }}
         run: |
           cd go-magic
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -o go-magic-${{ matrix.goos }}-${{ matrix.goarch }}${{ env.EXT }} ./cmd/magic
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic-${{ matrix.goos }}-${{ matrix.goarch }}${{ env.EXT }} ./cmd/magic
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}
           path: go-magic/go-magic-*
+          retention-days: 30
 
   # 创建发布包
   create-release:
     needs: [build-desktop, build-go-cli]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    permissions:
+      contents: write
 
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          echo "=== Artifacts ==="
+          ls -la artifacts/
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.txt
+          cat checksums.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.exe artifacts/**/*.AppImage artifacts/**/*.deb artifacts/**/*.rpm artifacts/**/go-magic-*
+          files: artifacts/*
+          generate_release_notes: true
+          body: |
+            ## Download Instructions
+
+            ### Desktop Applications
+            Download the appropriate installer for your platform:
+            - **Windows**: `.exe` (NSIS installer) or `.msi`
+            - **macOS**: `.dmg`
+            - **Linux**: `.AppImage`, `.deb`
+
+            ### CLI Tools
+            Download the CLI binary for your platform:
+            - `go-magic-linux-amd64`
+            - `go-magic-linux-arm64`
+            - `go-magic-darwin-amd64`
+            - `go-magic-darwin-arm64`
+            - `go-magic-windows-amd64.exe`
+
+            ## Checksums
+            Verify downloads using `checksums.txt`.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -9,17 +9,25 @@ edition = "2021"
 rust-version = "1.75"
 
 [build-dependencies]
-tauri-build = { version = "2.0.0", features = [] }
+tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.0.0", features = [] }
-tauri-plugin-shell = "2.0.0"
-tauri-plugin-fs = "2.0.0"
-tauri-plugin-os = "2.0.0"
-tauri-plugin-process = "2.0.0"
+tauri = { version = "2.0", features = ["devtools"] }
+tauri-plugin-shell = "2.0"
+tauri-plugin-fs = "2.0"
+tauri-plugin-os = "2.0"
+tauri-plugin-process = "2.0"
+tauri-plugin-log = "2.0"
+tauri-plugin-dialog = "2.0"
+tauri-plugin-http = "2.0"
+
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", features = ["blocking"] }
+chrono = "0.4"
 
-[features]
-default = []
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
