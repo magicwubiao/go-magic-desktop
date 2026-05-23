@@ -34,13 +34,13 @@ jobs:
           components: clippy, rustfmt
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
       - name: Run tests
-        run: cargo test --no-fail-fast
+        run: cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast
 
   # 构建桌面应用（Windows, macOS, Linux）
   build-desktop:
@@ -112,6 +112,8 @@ jobs:
           cd go-magic/web
           npm install
           npm run build
+          echo "=== Checking dist output ==="
+          ls -la ../internal/server/dist/ || (echo "FATAL: dist not found after build!" && exit 1)
 
       - name: Verify web dist for Go embed
         run: |
