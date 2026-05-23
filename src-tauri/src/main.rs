@@ -312,6 +312,8 @@ fn main() {
                     let server_url = format!("http://127.0.0.1:{}/", port);
                     println!("Creating window, URL: {}", server_url);
 
+                    thread::sleep(Duration::from_millis(300));
+
                     let window = WebviewWindowBuilder::new(
                         app,
                         "main",
@@ -326,6 +328,26 @@ fn main() {
                     .fullscreen(false)
                     .build()
                     .expect("Failed to create window");
+
+                    window.on_navigation(|e| {
+                        if e.is_error() {
+                            eprintln!("Navigation error: {:?}", e.error());
+                        }
+                        println!("Navigating to: {}", e.url());
+                        true
+                    });
+
+                    window.on_page_load(|_, payload| {
+                        println!("Page loaded: {}", payload.url());
+                        if !payload.url().starts_with("http://127.0.0.1") {
+                            eprintln!("WARNING: Unexpected URL loaded: {}", payload.url());
+                        }
+                    });
+
+                    #[cfg(debug_assertions)]
+                    {
+                        let _ = window.open_devtools();
+                    }
 
                     let _ = window.set_focus();
 
