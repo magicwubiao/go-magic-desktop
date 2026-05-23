@@ -329,18 +329,19 @@ fn main() {
                     .build()
                     .expect("Failed to create window");
 
-                    window.on_navigation(|e| {
-                        if e.is_error() {
-                            eprintln!("Navigation error: {:?}", e.error());
+                    let window_clone = window.clone();
+                    window.listen("tauri://navigation", move |event| {
+                        if let Some(url) = event.payload() {
+                            println!("Navigating to: {}", url);
                         }
-                        println!("Navigating to: {}", e.url());
-                        true
                     });
 
-                    window.on_page_load(|_, payload| {
-                        println!("Page loaded: {}", payload.url());
-                        if !payload.url().starts_with("http://127.0.0.1") {
-                            eprintln!("WARNING: Unexpected URL loaded: {}", payload.url());
+                    window.listen("tauri://page-load", move |event| {
+                        if let Some(url) = event.payload() {
+                            println!("Page loaded: {}", url);
+                            if !url.starts_with("http://127.0.0.1") {
+                                eprintln!("WARNING: Unexpected URL loaded: {}", url);
+                            }
                         }
                     });
 
