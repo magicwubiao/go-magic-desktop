@@ -136,7 +136,6 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
         Command::new(&backend_path)
             .creation_flags(CREATE_NO_WINDOW)
             .args(["server", "--port", &port.to_string()])
-            .current_dir(resource_dir)
             .env("GOMAGIC_PORT", port.to_string())
             .env("RUST_BACKTRACE", "1")
             .stdout(Stdio::piped())
@@ -178,7 +177,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
             for (i, line) in reader.lines().enumerate() {
-                if i >= 10 {
+                if i >= 50 {
                     break;
                 }
                 if let Ok(line) = line {
