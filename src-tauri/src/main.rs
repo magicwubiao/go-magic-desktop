@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // ============================================================================
 // 常量配置
@@ -45,13 +45,12 @@ fn pick_available_port() -> Option<u16> {
             return Some(port);
         }
     }
-    // 兜底：尝试 8000-9000 范围
+    // 兜底：尝�?8000-9000 范围
     (8000..9000).find(|&port| is_port_available(port))
 }
 
 // --------------------------------------------------------------------------
-// 健康检查
-// --------------------------------------------------------------------------
+// 健康检�?// --------------------------------------------------------------------------
 
 fn check_backend_health(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/health", port);
@@ -272,8 +271,7 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 }
 
 // ============================================================================
-// 主程序
-// ============================================================================
+// 主程�?// ============================================================================
 
 fn main() {
     println!("===========================================");
