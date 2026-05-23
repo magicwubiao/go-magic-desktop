@@ -65,9 +65,11 @@ fn check_backend_health(port: u16) -> bool {
         .build()
         .ok();
 
-    client.and_then(|c| {
-        c.get(&url).send().ok().map(|r| r.status().is_success())
-    }).unwrap_or(false)
+    client
+        .and_then(|c| {
+            c.get(&url).send().ok().map(|r| r.status().is_success())
+        })
+        .unwrap_or(false)
 }
 
 fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
@@ -235,7 +237,10 @@ fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
 
 #[tauri::command]
 fn get_backend_port() -> Option<u16> {
-    BACKEND_STATE.lock().ok().and_then(|g| g.as_ref().map(|s| s.port))
+    BACKEND_STATE
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.port))
 }
 
 #[tauri::command]

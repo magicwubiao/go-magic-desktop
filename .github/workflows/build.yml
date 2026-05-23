@@ -176,7 +176,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: true
           cache-dependency-path: go-magic/go.sum
 
@@ -187,6 +187,33 @@ jobs:
           cd go-magic
           CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
           ls -la go-magic${{ env.EXT }}
+
+      # ========== UPX 压缩 ==========
+      - name: Install UPX (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx
+
+      - name: Install UPX (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: brew install upx
+
+      - name: Install UPX (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install upx
+
+      - name: Compress backend with UPX
+        env:
+          EXT: ${{ matrix.goext }}
+        run: |
+          echo "Before UPX:"
+          ls -lh go-magic/go-magic${{ env.EXT }}
+          upx --best --lzma go-magic/go-magic${{ env.EXT }} || echo "UPX failed, using uncompressed binary"
+          echo "After UPX:"
+          ls -lh go-magic/go-magic${{ env.EXT }}
 
       # ========== 打包资源 ==========
       - name: Prepare resources directory
@@ -238,6 +265,18 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
 
       # ========== 收集产物 ==========
+      - name: Compress Tauri binary with UPX (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          BINARY="src-tauri/target/${{ matrix.target }}/release/go-magic-desktop"
+          if [ -f "$BINARY" ]; then
+            echo "Before UPX:"
+            ls -lh $BINARY
+            upx --best --lzma $BINARY || echo "UPX compression failed, using original"
+            echo "After UPX:"
+            ls -lh $BINARY
+          fi
+
       - name: Prepare bundle output
         run: |
           mkdir -p bundle-output
@@ -259,6 +298,8 @@ jobs:
 
           echo "=== Bundle output ==="
           ls -la bundle-output/
+          echo "=== File sizes ==="
+          du -h bundle-output/*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -286,7 +327,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: true
           cache-dependency-path: go-magic/go.sum
 
