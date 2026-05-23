@@ -327,14 +327,13 @@ fn main() {
                     .build()
                     .expect("Failed to create window");
 
-                    let window_clone = window.clone();
-                    window.listen("tauri://navigation", move |event| { println!("Navigating to: {}", event.payload()); });
+                                        window.listen("tauri://navigation", move |event| { println!("Navigating to: {}", event.payload()); });
 
                     window.listen("tauri://page-load", move |event| { println!("Page loaded: {}", event.payload()); });
 
                     #[cfg(debug_assertions)]
                     {
-                        let _ = window.open_devtools();
+                        window.open_devtools();
                     }
 
                     let _ = window.set_focus();
@@ -373,6 +372,7 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Failed to run Tauri application");
 }
+
 
 
 
