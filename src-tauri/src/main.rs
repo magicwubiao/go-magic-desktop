@@ -46,12 +46,7 @@ fn pick_available_port() -> Option<u16> {
         }
     }
     // 兜底：尝试 8000-9000 范围
-    for port in 8000..9000 {
-        if is_port_available(port) {
-            return Some(port);
-        }
-    }
-    None
+    (8000..9000).find(|&port| is_port_available(port))
 }
 
 // --------------------------------------------------------------------------
@@ -141,8 +136,8 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
         Command::new(&backend_path)
             .creation_flags(CREATE_NO_WINDOW)
             .args(["server", "--port", &port.to_string()])
-            .current_dir(&resource_dir)
-            .env("GOMAGIC_PORT", &port.to_string())
+            .current_dir(resource_dir)
+            .env("GOMAGIC_PORT", port.to_string())
             .env("RUST_BACKTRACE", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -154,8 +149,8 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
     let mut child = {
         Command::new(&backend_path)
             .args(["server", "--port", &port.to_string()])
-            .current_dir(&resource_dir)
-            .env("GOMAGIC_PORT", &port.to_string())
+            .current_dir(resource_dir)
+            .env("GOMAGIC_PORT", port.to_string())
             .env("RUST_BACKTRACE", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
