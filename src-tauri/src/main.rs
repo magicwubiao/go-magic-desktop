@@ -1,6 +1,6 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Go Magic Desktop - 进程分离模式
+//! Go Magic Desktop - 杩涚▼鍒嗙妯″紡
 
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // ============================================================================
-// 常量配置
+// 甯搁噺閰嶇疆
 // ============================================================================
 
 const DEFAULT_PORTS: &[u16] = &[5000, 5001, 5002, 5003, 5004, 8080, 3000];
@@ -20,7 +20,7 @@ const HEALTH_CHECK_TIMEOUT_SECS: u64 = 60;
 const HEALTH_CHECK_INTERVAL_MS: u64 = 500;
 
 // ============================================================================
-// 后端进程管理
+// 鍚庣杩涚▼绠＄悊
 // ============================================================================
 
 struct BackendState {
@@ -32,7 +32,7 @@ struct BackendState {
 static BACKEND_STATE: Mutex<Option<BackendState>> = Mutex::new(None);
 
 // --------------------------------------------------------------------------
-// 端口管理
+// 绔彛绠＄悊
 // --------------------------------------------------------------------------
 
 fn is_port_available(port: u16) -> bool {
@@ -45,12 +45,12 @@ fn pick_available_port() -> Option<u16> {
             return Some(port);
         }
     }
-    // 兜底：尝�?8000-9000 范围
+    // 鍏滃簳锛氬皾璇?8000-9000 鑼冨洿
     (8000..9000).find(|&port| is_port_available(port))
 }
 
 // --------------------------------------------------------------------------
-// 健康检�?// --------------------------------------------------------------------------
+// 鍋ュ悍妫€鏌?// --------------------------------------------------------------------------
 
 fn check_backend_health(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/health", port);
@@ -90,7 +90,7 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
 }
 
 // --------------------------------------------------------------------------
-// 进程控制
+// 杩涚▼鎺у埗
 // --------------------------------------------------------------------------
 
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
@@ -158,7 +158,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
 
     println!("Backend process spawned, PID: {:?}", child.id());
 
-    // 在后台线程中读取输出
+    // 鍦ㄥ悗鍙扮嚎绋嬩腑璇诲彇杈撳嚭
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     thread::spawn(move || {
@@ -230,7 +230,7 @@ fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
 }
 
 // ============================================================================
-// Tauri 命令
+// Tauri 鍛戒护
 // ============================================================================
 
 #[tauri::command]
@@ -271,7 +271,7 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 }
 
 // ============================================================================
-// 主程�?// ============================================================================
+// 涓荤▼搴?// ============================================================================
 
 fn main() {
     println!("===========================================");
@@ -384,3 +384,4 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Failed to run Tauri application");
 }
+
