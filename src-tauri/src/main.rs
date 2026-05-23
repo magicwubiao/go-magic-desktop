@@ -328,20 +328,9 @@ fn main() {
                     .expect("Failed to create window");
 
                     let window_clone = window.clone();
-                    window.listen("tauri://navigation", move |event| {
-                        if let Some(url) = event.payload() {
-                            println!("Navigating to: {}", url);
-                        }
-                    });
+                    window.listen("tauri://navigation", move |event| { println!("Navigating to: {}", event.payload()); });
 
-                    window.listen("tauri://page-load", move |event| {
-                        if let Some(url) = event.payload() {
-                            println!("Page loaded: {}", url);
-                            if !url.starts_with("http://127.0.0.1") {
-                                eprintln!("WARNING: Unexpected URL loaded: {}", url);
-                            }
-                        }
-                    });
+                    window.listen("tauri://page-load", move |event| { println!("Page loaded: {}", event.payload()); });
 
                     #[cfg(debug_assertions)]
                     {
@@ -384,4 +373,6 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Failed to run Tauri application");
 }
+
+
 
