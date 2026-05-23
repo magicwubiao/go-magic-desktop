@@ -45,7 +45,7 @@
     "longDescription": "Go Magic - AI-powered development assistant",
     "shortDescription": "AI-powered Development Assistant",
     "targets": "all",
-    "resources": [],
+    "resources": ["resources"],
     "windows": {
       "digestAlgorithm": "sha256",
       "nsis": {

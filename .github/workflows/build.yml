@@ -177,11 +177,21 @@ jobs:
             libssl-dev \
             libdbus-1-dev
 
+      - name: Install ARM64 cross compiler
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
       # ========== Tauri 构建 ==========
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli
 
       - name: Build Tauri app
+        env:
+          ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER' || '' }}: aarch64-linux-gnu-gcc
+          PKG_CONFIG_SYSROOT_DIR: /usr
+          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
           cd src-tauri
           cargo build --release --target ${{ matrix.target }}
@@ -238,6 +248,17 @@ jobs:
           go-version: '1.24'
           cache: true
           cache-dependency-path: go-magic/go.sum
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Web UI
+        run: |
+          cd go-magic/web
+          npm install
+          npm run build
 
       - name: Build Go CLI
         env:
