@@ -48,8 +48,16 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Check formatting
-        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+      - name: Auto format and commit
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "style: auto-format with rustfmt" || echo "No changes"
+            git push || echo "Push failed or no changes"
+          fi
 
       - name: Run clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
