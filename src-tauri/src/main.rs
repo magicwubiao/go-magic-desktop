@@ -66,9 +66,7 @@ fn check_backend_health(port: u16) -> bool {
         .ok();
 
     client
-        .and_then(|c| {
-            c.get(&url).send().ok().map(|r| r.status().is_success())
-        })
+        .and_then(|c| c.get(&url).send().ok().map(|r| r.status().is_success()))
         .unwrap_or(false)
 }
 
@@ -77,11 +75,14 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
     println!("Waiting for backend on port {}...", port);
 
     while start.elapsed().as_secs() < HEALTH_CHECK_TIMEOUT_SECS {
-        let _ = app_handle.emit("backend-status", serde_json::json!({
-            "state": "starting",
-            "elapsed": start.elapsed().as_secs(),
-            "port": port
-        }));
+        let _ = app_handle.emit(
+            "backend-status",
+            serde_json::json!({
+                "state": "starting",
+                "elapsed": start.elapsed().as_secs(),
+                "port": port
+            }),
+        );
 
         if check_backend_health(port) {
             println!("Backend ready after {}ms", start.elapsed().as_millis());
@@ -171,7 +172,9 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
         if let Some(stdout) = stdout {
             let reader = BufReader::new(stdout);
             for (i, line) in reader.lines().enumerate() {
-                if i >= 50 { break; }
+                if i >= 50 {
+                    break;
+                }
                 if let Ok(line) = line {
                     println!("[backend] {}", line);
                 }
@@ -180,7 +183,9 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
             for (i, line) in reader.lines().enumerate() {
-                if i >= 10 { break; }
+                if i >= 10 {
+                    break;
+                }
                 if let Ok(line) = line {
                     if !line.is_empty() {
                         eprintln!("[backend:err] {}", line);
@@ -263,7 +268,11 @@ fn get_app_info() -> serde_json::Value {
 #[tauri::command]
 fn check_backend_health_cmd(port: Option<u16>) -> bool {
     let p = port.unwrap_or_else(|| {
-        BACKEND_STATE.lock().ok().and_then(|g| g.as_ref().map(|s| s.port)).unwrap_or(5000)
+        BACKEND_STATE
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|s| s.port))
+            .unwrap_or(5000)
     });
     check_backend_health(p)
 }
@@ -287,7 +296,9 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_log::Builder::new().build())
         .setup(|app| {
-            let resource_dir = app.path().resource_dir()
+            let resource_dir = app
+                .path()
+                .resource_dir()
                 .expect("Failed to get resource directory");
             let app_handle = app.handle().clone();
 
@@ -324,10 +335,13 @@ fn main() {
 
                     let _ = window.set_focus();
 
-                    let _ = app_handle.emit("app-ready", serde_json::json!({
-                        "port": port,
-                        "url": format!("http://127.0.0.1:{}", port)
-                    }));
+                    let _ = app_handle.emit(
+                        "app-ready",
+                        serde_json::json!({
+                            "port": port,
+                            "url": format!("http://127.0.0.1:{}", port)
+                        }),
+                    );
 
                     println!("Application ready");
                 }
