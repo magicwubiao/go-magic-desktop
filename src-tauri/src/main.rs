@@ -596,7 +596,7 @@ fn main() {
                         WebviewUrl::External(server_url.parse().unwrap()),
                     )
                     .title("Go Magic")
-                    .outer_size(window_state.width, window_state.height)
+                    .inner_size(window_state.width, window_state.height)
                     .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
                     .position(x, y)
                     .focused(true)
@@ -630,7 +630,7 @@ fn main() {
                     println!("Application ready");
 
                     // 验证窗口创建后的实际尺寸
-                    if let Ok(actual_size) = window.outer_size() {
+                    if let Ok(actual_size) = window.inner_size() {
                         #[cfg(debug_assertions)]
                         {
                             println!(
