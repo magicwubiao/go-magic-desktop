@@ -1,16 +1,16 @@
 #!/bin/bash
 #==============================================================================
-# Go Magic Desktop - 进程分离模式构建脚本
+# Go Magic Desktop - Process Isolation Build Script
 #
-# 特点:
-# - 自动构建 go-magic 后端
-# - 打包前端资源
-# - 生成安装包
+# Features:
+# - Auto build go-magic backend
+# - Package frontend resources
+# - Generate installers
 #==============================================================================
 
 set -e
 
-# 颜色
+# Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
 log() { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -18,7 +18,7 @@ succ() { echo -e "${GREEN}[OK]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-# 检测操作系统
+# Detect operating system
 detect_os() {
     case "$(uname -s)" in
         Darwin*)  echo "macos" ;;
@@ -28,7 +28,7 @@ detect_os() {
     esac
 }
 
-# 获取后端二进制扩展名
+# Get backend binary extension
 get_backend_ext() {
     case "$(detect_os)" in
         windows) echo ".exe" ;;
@@ -36,7 +36,7 @@ get_backend_ext() {
     esac
 }
 
-# 目录
+# Directories
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 TAURI_DIR="$PROJECT_ROOT/src-tauri"
@@ -44,80 +44,80 @@ GOMAGIC_DIR="$PROJECT_ROOT/../go-magic"
 RESOURCES_DIR="$TAURI_DIR/resources"
 
 #==============================================================================
-# 步骤 1: 检查环境
+# Step 1: Check Environment
 #==============================================================================
 check_environment() {
-    log "检查构建环境..."
-    log "操作系统: $(detect_os)"
+    log "Checking build environment..."
+    log "OS: $(detect_os)"
 
-    command -v rustc >/dev/null || err "Rust 未安装"
-    command -v node >/dev/null || err "Node.js 未安装"
-    command -v go >/dev/null || err "Go 未安装"
+    command -v rustc >/dev/null || err "Rust not installed"
+    command -v node >/dev/null || err "Node.js not installed"
+    command -v go >/dev/null || err "Go not installed"
 
-    # 检查 Tauri CLI
+    # Check Tauri CLI
     if ! command -v tauri >/dev/null; then
-        log "安装 Tauri CLI..."
+        log "Installing Tauri CLI..."
         npm install -g @tauri-apps/cli
     fi
 
-    succ "环境检查完成"
+    succ "Environment check completed"
 }
 
 #==============================================================================
-# 步骤 2: 构建前端
+# Step 2: Build Frontend
 #==============================================================================
 build_frontend() {
-    log "构建前端..."
+    log "Building frontend..."
 
-    # 确定前端源码位置和输出位置
+    # Determine frontend source and output locations
     local src_dir=""
     local output_dir=""
 
     if [ -d "$GOMAGIC_DIR/web" ]; then
         src_dir="$GOMAGIC_DIR/web"
-        output_dir="$GOMAGIC_DIR/web/dist"
+        output_dir="$GOMAGIC_DIR/internal/server/dist"
     elif [ -d "$GOMAGIC_DIR/internal/server" ]; then
         src_dir="$GOMAGIC_DIR/internal/server"
         output_dir="$GOMAGIC_DIR/internal/server/dist"
     else
-        warn "go-magic 源码不存在，跳过前端构建"
+        warn "go-magic source not found, skipping frontend build"
         if [ ! -d "$PROJECT_ROOT/web-dist" ]; then
-            err "web-dist 目录也不存在，无法继续"
+            err "web-dist directory also not found, cannot continue"
         fi
-        warn "使用现有的 web-dist"
+        warn "Using existing web-dist"
         return 0
     fi
 
-    log "前端源码: $src_dir"
-    log "输出目录: $output_dir"
+    log "Frontend source: $src_dir"
+    log "Output directory: $output_dir"
 
     cd "$src_dir"
     npm install
     npm run build
 
-    # 复制到 web-dist
+    # Copy to web-dist
     if [ -d "$output_dir" ]; then
         rm -rf "$PROJECT_ROOT/web-dist"
         cp -r "$output_dir" "$PROJECT_ROOT/web-dist"
-        succ "前端构建完成 -> $PROJECT_ROOT/web-dist"
+        succ "Frontend built -> $PROJECT_ROOT/web-dist"
     else
-        err "前端构建失败：输出目录不存在"
+        err "Frontend build failed: output directory not found"
     fi
 
     cd "$PROJECT_ROOT"
 }
 
 #==============================================================================
-# 步骤 3: 构建后端
+# Step 3: Build Backend
 #==============================================================================
 build_backend() {
-    log "构建 go-magic 后端..."
+    log "Building go-magic backend..."
 
     if [ ! -d "$GOMAGIC_DIR/cmd/magic" ]; then
-        err "go-magic 源码目录不存在: $GOMAGIC_DIR/cmd/magic"
+        err "go-magic source directory not found: $GOMAGIC_DIR/cmd/magic"
     fi
 
-    # 确保资源目录存在
+    # Ensure resources directory exists
     mkdir -p "$RESOURCES_DIR"
 
     local ext=$(get_backend_ext)
@@ -125,32 +125,32 @@ build_backend() {
 
     cd "$GOMAGIC_DIR"
 
-    log "编译 go-magic 到: $output_file"
+    log "Compiling go-magic to: $output_file"
 
-    # 静态编译
+    # Static compilation
     CGO_ENABLED=0 go build -ldflags="-s -w" \
         -o "$output_file" \
         ./cmd/magic
 
     if [ -f "$output_file" ]; then
-        succ "后端构建完成"
+        succ "Backend built successfully"
         ls -lh "$output_file"
     else
-        err "后端构建失败"
+        err "Backend build failed"
     fi
 
     cd "$PROJECT_ROOT"
 }
 
 #==============================================================================
-# 步骤 4: 打包 Tauri 应用
+# Step 4: Package Tauri App
 #==============================================================================
 build_tauri() {
-    log "打包 Tauri 应用..."
+    log "Packaging Tauri application..."
 
-    # 确保 web-dist 存在
+    # Ensure web-dist exists
     if [ ! -d "$PROJECT_ROOT/web-dist" ]; then
-        err "web-dist 目录不存在，请先构建前端"
+        err "web-dist directory not found, please build frontend first"
     fi
 
     cd "$TAURI_DIR"
@@ -174,7 +174,7 @@ build_tauri() {
             ;;
     esac
 
-    log "构建目标: ${target:-default}"
+    log "Build target: ${target:-default}"
 
     if [ -n "$target" ]; then
         tauri build $target
@@ -183,20 +183,20 @@ build_tauri() {
     fi
 
     cd "$PROJECT_ROOT"
-    succ "Tauri 应用打包完成"
+    succ "Tauri application packaged successfully"
 }
 
 #==============================================================================
-# 步骤 5: 显示结果
+# Step 5: Show Results
 #==============================================================================
 show_result() {
-    log "构建输出:"
+    log "Build output:"
 
     local bundle_dir="$TAURI_DIR/target/release/bundle"
 
     echo ""
     echo "============================================"
-    echo " 安装包位置"
+    echo " Installer Locations"
     echo "============================================"
 
     find "$bundle_dir" -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) 2>/dev/null | while read -r f; do
@@ -206,7 +206,7 @@ show_result() {
 
     echo ""
     echo "============================================"
-    echo " 资源文件"
+    echo " Resource Files"
     echo "============================================"
     ls -lh "$RESOURCES_DIR/" 2>/dev/null || true
 
@@ -214,14 +214,14 @@ show_result() {
 }
 
 #==============================================================================
-# 主函数
+# Main Function
 #==============================================================================
 main() {
-    log "Go Magic Desktop 构建脚本"
-    log "模式: 进程分离 (Tauri + go-magic)"
+    log "Go Magic Desktop Build Script"
+    log "Mode: Process Isolation (Tauri + go-magic)"
     echo ""
 
-    # 解析参数
+    # Parse arguments
     case "${1:-all}" in
         all)
             check_environment
@@ -243,25 +243,25 @@ main() {
             build_tauri
             ;;
         clean)
-            log "清理..."
+            log "Cleaning..."
             rm -rf "$PROJECT_ROOT/web-dist"
             rm -rf "$RESOURCES_DIR/go-magic"*
             rm -rf "$TAURI_DIR/target"
-            succ "清理完成"
+            succ "Clean completed"
             ;;
         help|--help|-h)
-            echo "用法: $0 [选项]"
+            echo "Usage: $0 [options]"
             echo ""
-            echo "选项:"
-            echo "  all       完整构建 (默认)"
-            echo "  frontend  仅构建前端"
-            echo "  backend   仅构建后端"
-            echo "  tauri     仅打包 Tauri"
-            echo "  clean     清理构建产物"
-            echo "  help      显示帮助"
+            echo "Options:"
+            echo "  all       Full build (default)"
+            echo "  frontend  Build frontend only"
+            echo "  backend   Build backend only"
+            echo "  tauri     Package Tauri only"
+            echo "  clean     Clean build artifacts"
+            echo "  help      Show this help"
             ;;
         *)
-            err "未知参数: $1"
+            err "Unknown argument: $1"
             ;;
     esac
 }

@@ -30,7 +30,7 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update || true
+          sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
@@ -107,11 +107,8 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
           else
-            VERSION=$(git describe --tags --always 2>/dev/null || echo "1.0.0")
-            VERSION=${VERSION#v}
+            VERSION="1.0.0"
           fi
-          VERSION=$(echo "$VERSION" | sed 's/-g[0-9a-f]*$//')
-          VERSION=$(echo "$VERSION" | sed 's/-[^0-9].*$//')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
 
@@ -222,7 +219,7 @@ jobs:
       - name: Install UPX (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update || true
+          sudo apt-get update
           sudo apt-get install -y upx
 
       - name: Install UPX (macOS)
@@ -265,7 +262,7 @@ jobs:
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update || true
+          sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
@@ -340,25 +337,6 @@ jobs:
           ls -la bundle-output/
           echo "=== File sizes ==="
           du -h bundle-output/*
-
-      - name: Verify bundle contains frontend resources
-        shell: bash
-        run: |
-          echo "=== Checking for installer packages ==="
-          if ls bundle-output/*.exe bundle-output/*.msi bundle-output/*.dmg bundle-output/*.AppImage bundle-output/*.deb 2>/dev/null; then
-            echo "Installer packages found"
-          else
-            echo "WARNING: No installer packages found!"
-          fi
-
-          echo "=== Checking web-dist content ==="
-          if [ -d "web-dist" ] && [ -f "web-dist/index.html" ]; then
-            echo "web-dist/index.html exists"
-            head -c 200 web-dist/index.html
-            echo ""
-          else
-            echo "WARNING: web-dist/index.html not found!"
-          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

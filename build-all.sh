@@ -1,171 +1,171 @@
 #!/bin/bash
 #==============================================================================
-# Go Magic Desktop - 多平台构建脚本
+# Go Magic Desktop - Multi-platform Build Script
 #==============================================================================
 
 set -e
 
-# 颜色定义
+# Color definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# 日志函数
+# Log functions
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# 变量
+# Variables
 PROJECT_NAME="go-magic-desktop"
 BUILD_DIR="src-tauri/target/release"
 BUNDLE_DIR="$BUILD_DIR/bundle"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
-# 显示帮助
+# Show help
 show_help() {
     cat << EOF
-Go Magic Desktop 构建脚本
+Go Magic Desktop Build Script
 
-用法: $0 [选项]
+Usage: $0 [options]
 
-选项:
-    all         构建所有平台 (默认)
-    windows     构建 Windows 版本
-    macos       构建 macOS 版本 (Intel)
-    macos-arm   构建 macOS 版本 (Apple Silicon)
-    linux       构建 Linux 版本 (x64)
-    linux-arm   构建 Linux 版本 (ARM64)
-    web         仅构建前端
-    clean       清理构建产物
-    help        显示此帮助信息
+Options:
+    all         Build all platforms (default)
+    windows     Build Windows version
+    macos       Build macOS version (Intel)
+    macos-arm   Build macOS version (Apple Silicon)
+    linux       Build Linux version (x64)
+    linux-arm   Build Linux version (ARM64)
+    web         Build frontend only
+    clean       Clean build artifacts
+    help        Show this help message
 
-示例:
-    $0 all          # 构建所有平台
-    $0 windows      # 仅构建 Windows
-    $0 web clean    # 清理并重新构建前端
+Examples:
+    $0 all          # Build all platforms
+    $0 windows      # Build Windows only
+    $0 web clean    # Clean and rebuild frontend
 
 EOF
 }
 
-# 检查依赖
+# Check dependencies
 check_dependencies() {
-    log_info "检查构建依赖..."
+    log_info "Checking build dependencies..."
 
-    # 检查 Rust
+    # Check Rust
     if ! command -v rustc &> /dev/null; then
-        log_error "Rust 未安装"
+        log_error "Rust not installed"
         exit 1
     fi
 
-    # 检查 Node.js
+    # Check Node.js
     if ! command -v node &> /dev/null; then
-        log_error "Node.js 未安装"
+        log_error "Node.js not installed"
         exit 1
     fi
 
-    # 检查 npm
+    # Check npm
     if ! command -v npm &> /dev/null; then
-        log_error "npm 未安装"
+        log_error "npm not installed"
         exit 1
     fi
 
-    # 检查 Tauri CLI
+    # Check Tauri CLI
     if ! command -v tauri &> /dev/null; then
-        log_warn "Tauri CLI 未安装，正在安装..."
+        log_warn "Tauri CLI not installed, installing..."
         npm install -g @tauri-apps/cli
     fi
 
-    log_success "依赖检查完成"
+    log_success "Dependency check completed"
 }
 
-# 安装 npm 依赖
+# Install npm dependencies
 install_deps() {
-    log_info "安装项目依赖..."
+    log_info "Installing project dependencies..."
     npm install
-    log_success "依赖安装完成"
+    log_success "Dependencies installed"
 }
 
-# 构建前端
+# Build frontend
 build_frontend() {
-    log_info "构建前端..."
+    log_info "Building frontend..."
 
-    # 检查 go-magic/web 目录
+    # Check go-magic/web directory
     if [ -d "../go-magic/web" ]; then
         cd ../go-magic/web
         npm install
         npm run build
         cd - > /dev/null
-        log_success "前端构建完成"
+        log_success "Frontend built successfully"
     else
-        log_warn "go-magic/web 目录不存在，跳过前端构建"
-        log_info "请确保 web-dist 目录存在"
+        log_warn "go-magic/web directory not found, skipping frontend build"
+        log_info "Ensure web-dist directory exists"
     fi
 }
 
-# 清理构建产物
+# Clean build artifacts
 clean_build() {
-    log_info "清理构建产物..."
+    log_info "Cleaning build artifacts..."
     cd src-tauri
     cargo clean
     rm -rf target 2>/dev/null || true
     rm -rf "$BUNDLE_DIR" 2>/dev/null || true
     cd - > /dev/null
-    log_success "清理完成"
+    log_success "Clean completed"
 }
 
-# 构建 Windows 版本
+# Build Windows version
 build_windows() {
-    log_info "构建 Windows 版本..."
+    log_info "Building Windows version..."
     tauri build --target x86_64-pc-windows-msvc
-    log_success "Windows 构建完成"
+    log_success "Windows build completed"
 }
 
-# 构建 macOS Intel 版本
+# Build macOS Intel version
 build_macos() {
-    log_info "构建 macOS 版本 (Intel)..."
+    log_info "Building macOS version (Intel)..."
     tauri build --target x86_64-apple-darwin
-    log_success "macOS (Intel) 构建完成"
+    log_success "macOS (Intel) build completed"
 }
 
-# 构建 macOS ARM 版本
+# Build macOS ARM version
 build_macos_arm() {
-    log_info "构建 macOS 版本 (Apple Silicon)..."
+    log_info "Building macOS version (Apple Silicon)..."
     tauri build --target aarch64-apple-darwin
-    log_success "macOS (Apple Silicon) 构建完成"
+    log_success "macOS (Apple Silicon) build completed"
 }
 
-# 构建 Linux x64 版本
+# Build Linux x64 version
 build_linux() {
-    log_info "构建 Linux 版本 (x64)..."
+    log_info "Building Linux version (x64)..."
     tauri build --target x86_64-unknown-linux-gnu
-    log_success "Linux (x64) 构建完成"
+    log_success "Linux (x64) build completed"
 }
 
-# 构建 Linux ARM64 版本
+# Build Linux ARM64 version
 build_linux_arm() {
-    log_info "构建 Linux 版本 (ARM64)..."
+    log_info "Building Linux version (ARM64)..."
     tauri build --target aarch64-unknown-linux-gnu
-    log_success "Linux (ARM64) 构建完成"
+    log_success "Linux (ARM64) build completed"
 }
 
-# 构建所有平台
+# Build all platforms
 build_all() {
-    log_info "开始构建所有平台..."
+    log_info "Starting build for all platforms..."
 
-    # 构建前端
+    # Build frontend
     build_frontend
 
-    # 检测当前平台并构建
+    # Detect current platform and build
     case "$(uname -s)" in
         Linux*)
-            log_info "检测到 Linux 系统"
+            log_info "Detected Linux system"
             build_linux
             ;;
         Darwin*)
-            log_info "检测到 macOS 系统"
+            log_info "Detected macOS system"
             if [ "$(uname -m)" = "arm64" ]; then
                 build_macos_arm
             else
@@ -173,24 +173,24 @@ build_all() {
             fi
             ;;
         MINGW*|CYGWIN*|MSYS*)
-            log_info "检测到 Windows 系统"
+            log_info "Detected Windows system"
             build_windows
             ;;
         *)
-            log_error "不支持的操作系统"
+            log_error "Unsupported operating system"
             exit 1
             ;;
     esac
 
-    log_success "所有构建完成！"
+    log_success "All builds completed!"
     show_output_info
 }
 
-# 显示构建输出信息
+# Show build output info
 show_output_info() {
     echo ""
     echo "=========================================="
-    echo "构建输出位置:"
+    echo "Build Output:"
     echo "=========================================="
 
     if [ -d "$BUNDLE_DIR/nsis" ]; then
@@ -221,12 +221,12 @@ show_output_info() {
     echo "=========================================="
 }
 
-# 主函数
+# Main function
 main() {
-    # 切换到项目根目录
+    # Switch to project root directory
     cd "$(dirname "$0")"
 
-    # 解析参数
+    # Parse arguments
     case "${1:-all}" in
         all)
             check_dependencies
@@ -267,12 +267,12 @@ main() {
             show_help
             ;;
         *)
-            log_error "未知参数: $1"
+            log_error "Unknown argument: $1"
             show_help
             exit 1
             ;;
     esac
 }
 
-# 执行主函数
+# Execute main function
 main "$@"

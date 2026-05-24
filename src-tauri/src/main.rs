@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // ============================================================================
 // Constants Configuration
@@ -64,7 +64,7 @@ fn check_backend_health(port: u16) -> bool {
         .unwrap_or(false)
 }
 
-fn wait_for_backend_ready<R: Runtime>(port: u16, app_handle: &AppHandle<R>) -> bool {
+fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
     let start = Instant::now();
 
     #[cfg(debug_assertions)]
@@ -126,7 +126,7 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn start_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) -> Option<(Child, u16)> {
+fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, u16)> {
     let port = pick_available_port()?;
 
     #[cfg(debug_assertions)]
@@ -172,11 +172,11 @@ fn start_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) -> 
     thread::spawn(move || {
         if let Some(stdout) = stdout {
             let reader = BufReader::new(stdout);
-            for (i, result) in reader.lines().enumerate() {
+            for (i, line) in reader.lines().enumerate() {
                 if i >= 50 {
                     break;
                 }
-                if let Ok(line) = result {
+                if let Ok(line) = line {
                     #[cfg(debug_assertions)]
                     println!("[backend] {}", line);
                 }
@@ -212,11 +212,10 @@ fn start_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) -> 
 fn stop_backend() {
     if let Ok(mut guard) = BACKEND_STATE.lock() {
         if let Some(mut state) = guard.take() {
-            #[cfg(debug_assertions)]
-            let runtime = state.start_time.elapsed().as_secs_f64();
+            let _runtime = state.start_time.elapsed().as_secs_f64();
 
             #[cfg(debug_assertions)]
-            println!("Stopping backend (ran for {:.1}s)...", runtime);
+            println!("Stopping backend (ran for {:.1}s)...", _runtime);
 
             match state.process.kill() {
                 Ok(_) => {
@@ -229,7 +228,7 @@ fn stop_backend() {
     }
 }
 
-fn restart_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) {
+fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
     #[cfg(debug_assertions)]
     println!("Restarting backend...");
     stop_backend();
@@ -260,7 +259,7 @@ fn get_backend_port() -> Option<u16> {
 }
 
 #[tauri::command]
-fn restart_backend_cmd<R: Runtime>(app_handle: AppHandle<R>) {
+fn restart_backend_cmd(app_handle: AppHandle) {
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
         restart_backend(&app_handle, &resource_dir);
     }
@@ -293,7 +292,7 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 // ============================================================================
 
 fn main() {
-    tauri::Builder::<tauri::Wry>::default()
+    tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
