@@ -56,10 +56,10 @@ fn adjust_position_for_screen(
 ) -> (f64, f64) {
     if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
         let wa = monitor.work_area();
-        let screen_x = wa.x as f64;
-        let screen_y = wa.y as f64;
-        let screen_width = wa.width as f64;
-        let screen_height = wa.height as f64;
+        let screen_x = wa.position.x as f64;
+        let screen_y = wa.position.y as f64;
+        let screen_width = wa.size.width as f64;
+        let screen_height = wa.size.height as f64;
 
         let mut new_x = x;
         let mut new_y = y;
@@ -610,7 +610,7 @@ fn main() {
                         }
                     };
 
-                    let mut window_builder = WebviewWindowBuilder::new(
+                    let window_builder = WebviewWindowBuilder::new(
                         app,
                         "main",
                         WebviewUrl::External(server_url.parse().unwrap()),
