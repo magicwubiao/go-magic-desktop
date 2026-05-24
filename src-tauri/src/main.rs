@@ -15,17 +15,17 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 // Window State Management
 // ============================================================================
 
-const DEFAULT_WINDOW_WIDTH: u32 = 1280;
-const DEFAULT_WINDOW_HEIGHT: u32 = 720;
-const MIN_WINDOW_WIDTH: u32 = 1000;
-const MIN_WINDOW_HEIGHT: u32 = 700;
+const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 720.0;
+const MIN_WINDOW_WIDTH: f64 = 1000.0;
+const MIN_WINDOW_HEIGHT: f64 = 700.0;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 struct WindowState {
-    width: u32,
-    height: u32,
-    x: Option<i32>,
-    y: Option<i32>,
+    width: f64,
+    height: f64,
+    x: Option<f64>,
+    y: Option<f64>,
 }
 
 impl Default for WindowState {
@@ -48,31 +48,31 @@ fn get_window_state_path(app_handle: &AppHandle) -> Option<PathBuf> {
 }
 
 fn adjust_position_for_screen(
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
     app_handle: &AppHandle,
-) -> (i32, i32) {
+) -> (f64, f64) {
     if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
         let wa = monitor.work_area();
-        let screen_x = wa.position.x;
-        let screen_y = wa.position.y;
-        let screen_width = wa.size.width;
-        let screen_height = wa.size.height;
+        let screen_x = wa.position.x as f64;
+        let screen_y = wa.position.y as f64;
+        let screen_width = wa.size.width as f64;
+        let screen_height = wa.size.height as f64;
 
         let mut new_x = x;
         let mut new_y = y;
 
-        if new_x + width as i32 > screen_x + screen_width as i32 {
-            new_x = screen_x + screen_width as i32 - width as i32;
+        if new_x + width > screen_x + screen_width {
+            new_x = screen_x + screen_width - width;
         }
         if new_x < screen_x {
             new_x = screen_x;
         }
 
-        if new_y + height as i32 > screen_y + screen_height as i32 {
-            new_y = screen_y + screen_height as i32 - height as i32;
+        if new_y + height > screen_y + screen_height {
+            new_y = screen_y + screen_height - height;
         }
         if new_y < screen_y {
             new_y = screen_y;
@@ -92,20 +92,20 @@ fn save_window_state(app_handle: &AppHandle) {
     };
 
     let (width, height) = match window.inner_size() {
-        Ok(size) => (size.width, size.height),
+        Ok(size) => (size.width as f64, size.height as f64),
         Err(_) => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
     };
 
     let (x, y) = match window.outer_position() {
-        Ok(pos) => (Some(pos.x), Some(pos.y)),
+        Ok(pos) => (Some(pos.x as f64), Some(pos.y as f64)),
         Err(_) => (None, None),
     };
 
     let state = WindowState {
-        width,
-        height,
-        x,
-        y,
+        width: width.round(),
+        height: height.round(),
+        x: x.map(|v| v.round()),
+        y: y.map(|v| v.round()),
     };
 
     if let Ok(json) = serde_json::to_string_pretty(&state) {
@@ -562,16 +562,16 @@ fn main() {
                             // 基于屏幕尺寸居中
                             if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
                                 let wa = monitor.work_area();
-                                let screen_width = wa.size.width;
-                                let screen_height = wa.size.height;
-                                let screen_x = wa.position.x;
-                                let screen_y = wa.position.y;
+                                let screen_width = wa.size.width as f64;
+                                let screen_height = wa.size.height as f64;
+                                let screen_x = wa.position.x as f64;
+                                let screen_y = wa.position.y as f64;
                                 (
-                                    screen_x + (screen_width - window_state.width as i32) / 2,
-                                    screen_y + (screen_height - window_state.height as i32) / 2,
+                                    screen_x + (screen_width - window_state.width) / 2.0,
+                                    screen_y + (screen_height - window_state.height) / 2.0,
                                 )
                             } else {
-                                (0, 0)
+                                (0.0, 0.0)
                             }
                         }
                     };
