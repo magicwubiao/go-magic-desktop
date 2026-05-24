@@ -288,6 +288,12 @@ jobs:
           echo "AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
           echo "AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu" >> $GITHUB_ENV
 
+      # ========== 安装 Tauri 依赖 ==========
+      - name: Install Tauri dependencies
+        run: |
+          cd src-tauri
+          npm install
+
       # ========== Tauri 构建 ==========
       - name: Build Tauri app
         env:
