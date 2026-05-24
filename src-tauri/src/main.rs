@@ -15,6 +15,11 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 // Window State Management
 // ============================================================================
 
+const DEFAULT_WINDOW_WIDTH: f64 = 1400.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 900.0;
+const MIN_WINDOW_WIDTH: f64 = 1000.0;
+const MIN_WINDOW_HEIGHT: f64 = 700.0;
+
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
 struct WindowState {
     width: f64,
@@ -26,8 +31,8 @@ struct WindowState {
 impl Default for WindowState {
     fn default() -> Self {
         WindowState {
-            width: 1400.0,
-            height: 900.0,
+            width: DEFAULT_WINDOW_WIDTH,
+            height: DEFAULT_WINDOW_HEIGHT,
             x: None,
             y: None,
         }
@@ -42,6 +47,49 @@ fn get_window_state_path(app_handle: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join("window-state.json"))
 }
 
+fn adjust_position_for_screen(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    app_handle: &AppHandle,
+) -> (f64, f64) {
+    if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+        if let Ok(wa) = monitor.work_area() {
+            let screen_x = wa.x as f64;
+            let screen_y = wa.y as f64;
+            let screen_width = wa.width as f64;
+            let screen_height = wa.height as f64;
+
+            let mut new_x = x;
+            let mut new_y = y;
+
+            if new_x + width > screen_x + screen_width {
+                new_x = screen_x + screen_width - width;
+            }
+            if new_x < screen_x {
+                new_x = screen_x;
+            }
+
+            if new_y + height > screen_y + screen_height {
+                new_y = screen_y + screen_height - height;
+            }
+            if new_y < screen_y {
+                new_y = screen_y;
+            }
+
+            #[cfg(debug_assertions)]
+            println!(
+                "Adjusted position: ({:.0}, {:.0}) -> ({:.0}, {:.0}) to fit screen ({:.0}x{:.0})",
+                x, y, new_x, new_y, screen_width, screen_height
+            );
+
+            return (new_x, new_y);
+        }
+    }
+    (x, y)
+}
+
 fn save_window_state(app_handle: &AppHandle) {
     let Some(path) = get_window_state_path(app_handle) else {
         return;
@@ -50,30 +98,33 @@ fn save_window_state(app_handle: &AppHandle) {
         return;
     };
 
+    let (width, height) = match window.inner_size() {
+        Ok(size) => (size.width as f64, size.height as f64),
+        Err(_) => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
+    };
+
+    let (x, y) = match window.outer_position() {
+        Ok(pos) => (Some(pos.x as f64), Some(pos.y as f64)),
+        Err(_) => (None, None),
+    };
+
     let state = WindowState {
-        width: match window.inner_size() {
-            Ok(size) => size.width as f64,
-            Err(_) => 1400.0,
-        },
-        height: match window.inner_size() {
-            Ok(size) => size.height as f64,
-            Err(_) => 900.0,
-        },
-        x: match window.inner_position() {
-            Ok(pos) => Some(pos.x as f64),
-            Err(_) => None,
-        },
-        y: match window.inner_position() {
-            Ok(pos) => Some(pos.y as f64),
-            Err(_) => None,
-        },
+        width,
+        height,
+        x,
+        y,
     };
 
     if let Ok(json) = serde_json::to_string_pretty(&state) {
-        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&PathBuf::from("")));
-        let _ = std::fs::write(&path, json);
-        #[cfg(debug_assertions)]
-        println!("Saved window state to {:?}", path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&path, &json) {
+            eprintln!("Failed to save window state: {}", e);
+        } else {
+            #[cfg(debug_assertions)]
+            println!("Saved window state to {:?}: {:?}", path, state);
+        }
     }
 }
 
@@ -85,8 +136,25 @@ fn load_window_state(app_handle: &AppHandle) -> WindowState {
         return WindowState::default();
     }
     match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str::<WindowState>(&content).unwrap_or_default(),
-        Err(_) => WindowState::default(),
+        Ok(content) => match serde_json::from_str::<WindowState>(&content) {
+            Ok(mut state) => {
+                if state.width < MIN_WINDOW_WIDTH {
+                    state.width = DEFAULT_WINDOW_WIDTH;
+                }
+                if state.height < MIN_WINDOW_HEIGHT {
+                    state.height = DEFAULT_WINDOW_HEIGHT;
+                }
+                state
+            }
+            Err(e) => {
+                eprintln!("Failed to parse window state: {}", e);
+                WindowState::default()
+            }
+        },
+        Err(e) => {
+            eprintln!("Failed to read window state: {}", e);
+            WindowState::default()
+        }
     }
 }
 
@@ -204,7 +272,7 @@ fn ensure_executable(_path: &Path) -> bool {
     true
 }
 
-fn find_backend_path(_resource_dir: &Path) -> Option<PathBuf> {
+fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     let binary_names = vec!["go-magic.exe", "go-magic"];
 
@@ -216,13 +284,8 @@ fn find_backend_path(_resource_dir: &Path) -> Option<PathBuf> {
             for name in &binary_names {
                 let path = exe_dir.join(name);
                 if path.exists() {
-                    if !ensure_executable(&path) {
-                        #[cfg(debug_assertions)]
-                        eprintln!(
-                            "Warning: Failed to set executable permissions for {:?}",
-                            path
-                        );
-                    }
+                    #[cfg(debug_assertions)]
+                    println!("Found backend in exe dir: {:?}", path);
                     return Some(path);
                 }
             }
@@ -234,18 +297,48 @@ fn find_backend_path(_resource_dir: &Path) -> Option<PathBuf> {
                     for name in &binary_names {
                         let path = resources_dir.join(name);
                         if path.exists() {
-                            if !ensure_executable(&path) {
-                                #[cfg(debug_assertions)]
-                                eprintln!(
-                                    "Warning: Failed to set executable permissions for {:?}",
-                                    path
-                                );
-                            }
+                            #[cfg(debug_assertions)]
+                            println!("Found backend in macOS Resources: {:?}", path);
                             return Some(path);
                         }
                     }
                 }
             }
+
+            #[cfg(target_os = "linux")]
+            {
+                for name in &binary_names {
+                    let path = exe_dir.join(name);
+                    if path.exists() {
+                        #[cfg(debug_assertions)]
+                        println!("Found backend in linux exe dir: {:?}", path);
+                        return Some(path);
+                    }
+                }
+
+                let resources_relative = exe_dir.join("resources");
+                if resources_relative.exists() {
+                    for name in &binary_names {
+                        let path = resources_relative.join(name);
+                        if path.exists() {
+                            #[cfg(debug_assertions)]
+                            println!("Found backend in linux resources dir: {:?}", path);
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for name in &binary_names {
+        let path = resource_dir.join(name);
+        #[cfg(debug_assertions)]
+        println!("Checking resource_dir: {:?} for {}", path, name);
+        if path.exists() {
+            #[cfg(debug_assertions)]
+            println!("Found backend in resource_dir: {:?}", path);
+            return Some(path);
         }
     }
 
@@ -278,6 +371,9 @@ fn start_backend(
     println!("Selected port: {}", port);
 
     let backend_path = find_backend_path(resource_dir).ok_or(BackendError::BackendNotFound)?;
+
+    #[cfg(debug_assertions)]
+    println!("Backend path: {:?}", backend_path);
 
     #[cfg(target_os = "windows")]
     let mut child = {
@@ -394,7 +490,10 @@ fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
                 BackendError::NoPortAvailable => "No available port found".to_string(),
                 BackendError::BackendNotFound => "Backend executable not found".to_string(),
                 BackendError::SpawnFailed(msg) => format!("Failed to start backend: {}", msg),
-                BackendError::HealthCheckTimeout => "Backend health check timed out".to_string(),
+                BackendError::HealthCheckTimeout => {
+                    "Backend health check timed out, please verify if backend is working correctly"
+                        .to_string()
+                }
             };
             eprintln!("Restart failed: {}", error_msg);
         }
@@ -460,7 +559,11 @@ fn main() {
                 Ok(dir) => dir,
                 Err(e) => {
                     let app_handle = app.handle().clone();
-                    show_error_dialog(&app_handle, "Startup Error", &format!("Failed to get resource directory: {}", e));
+                    show_error_dialog(
+                        &app_handle,
+                        "Startup Error",
+                        &format!("Failed to get resource directory: {}", e),
+                    );
                     return Err(e.into());
                 }
             };
@@ -489,6 +592,25 @@ fn main() {
 
                     let window_state = load_window_state(&app_handle);
 
+                    #[cfg(debug_assertions)]
+                    println!("Loaded window state: {:?}", window_state);
+
+                    let (x, y) = match (window_state.x, window_state.y) {
+                        (Some(x), Some(y)) => {
+                            adjust_position_for_screen(
+                                x,
+                                y,
+                                window_state.width,
+                                window_state.height,
+                                &app_handle,
+                            )
+                        }
+                        _ => {
+                            let (w, h) = (window_state.width, window_state.height);
+                            (DEFAULT_WINDOW_WIDTH - w / 2.0, DEFAULT_WINDOW_HEIGHT - h / 2.0)
+                        }
+                    };
+
                     let mut window_builder = WebviewWindowBuilder::new(
                         app,
                         "main",
@@ -496,18 +618,19 @@ fn main() {
                     )
                     .title("Go Magic")
                     .inner_size(window_state.width, window_state.height)
-                    .min_inner_size(1000.0, 700.0)
+                    .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+                    .position(x, y)
                     .focused(true)
                     .resizable(true)
                     .fullscreen(false);
 
-                    if let (Some(x), Some(y)) = (window_state.x, window_state.y) {
-                        window_builder = window_builder.position(x, y);
-                    } else {
-                        window_builder = window_builder.center();
-                    }
-
-                    let window = window_builder.build().expect("Failed to create window");
+                    let window = match window_builder.build() {
+                        Ok(w) => w,
+                        Err(e) => {
+                            eprintln!("Failed to create window: {}", e);
+                            return Err(e.into());
+                        }
+                    };
 
                     #[cfg(debug_assertions)]
                     {
@@ -526,14 +649,23 @@ fn main() {
 
                     #[cfg(debug_assertions)]
                     println!("Application ready");
+
+                    let saved_state = load_window_state(&app_handle);
+                    #[cfg(debug_assertions)]
+                    println!("Final window state after creation: {:?}", saved_state);
                 }
                 Err(e) => {
                     let error_msg = match &e {
                         BackendError::NoPortAvailable => "No available port found".to_string(),
                         BackendError::BackendNotFound => {
-                            format!("Backend executable not found\nPlease check resource directory: {:?}", resource_dir)
+                            format!(
+                                "Backend executable not found\nPlease check resource directory: {:?}",
+                                resource_dir
+                            )
                         }
-                        BackendError::SpawnFailed(msg) => format!("Failed to start backend: {}", msg),
+                        BackendError::SpawnFailed(msg) => {
+                            format!("Failed to start backend: {}", msg)
+                        }
                         BackendError::HealthCheckTimeout => {
                             "Backend health check timed out, please verify if backend is working correctly".to_string()
                         }
@@ -561,7 +693,7 @@ fn main() {
                     stop_backend();
                     app_handle.exit(0);
                 }
-                tauri::WindowEvent::Resized { .. } | tauri::WindowEvent::Moved { .. } => {
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
                     save_window_state(&app_handle);
                 }
                 _ => {}
