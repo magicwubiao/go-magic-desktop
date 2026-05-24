@@ -110,6 +110,8 @@ jobs:
             VERSION=$(git describe --tags --always 2>/dev/null || echo "1.0.0")
             VERSION=${VERSION#v}
           fi
+          VERSION=$(echo "$VERSION" | sed 's/-g[0-9a-f]*$//')
+          VERSION=$(echo "$VERSION" | sed 's/-[^0-9].*$//')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Building version: $VERSION"
 

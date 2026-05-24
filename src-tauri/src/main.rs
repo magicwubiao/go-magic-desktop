@@ -172,11 +172,11 @@ fn start_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) -> 
     thread::spawn(move || {
         if let Some(stdout) = stdout {
             let reader = BufReader::new(stdout);
-            for (i, line) in reader.lines().enumerate() {
+            for (i, result) in reader.lines().enumerate() {
                 if i >= 50 {
                     break;
                 }
-                if let Ok(line) = line {
+                if let Ok(line) = result {
                     #[cfg(debug_assertions)]
                     println!("[backend] {}", line);
                 }
@@ -212,6 +212,7 @@ fn start_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) -> 
 fn stop_backend() {
     if let Ok(mut guard) = BACKEND_STATE.lock() {
         if let Some(mut state) = guard.take() {
+            #[cfg(debug_assertions)]
             let runtime = state.start_time.elapsed().as_secs_f64();
 
             #[cfg(debug_assertions)]
