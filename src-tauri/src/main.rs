@@ -64,6 +64,7 @@ fn adjust_position_for_screen(
         let mut new_x = x;
         let mut new_y = y;
 
+        // 确保窗口完全在屏幕内
         if new_x + width > screen_x + screen_width {
             new_x = screen_x + screen_width - width;
         }
@@ -80,8 +81,8 @@ fn adjust_position_for_screen(
 
         #[cfg(debug_assertions)]
         println!(
-            "Adjusted position: ({:.0}, {:.0}) -> ({:.0}, {:.0}) to fit screen ({:.0}x{:.0})",
-            x, y, new_x, new_y, screen_width, screen_height
+            "Position adjust: ({:.0}, {:.0}) -> ({:.0}, {:.0})",
+            x, y, new_x, new_y
         );
 
         return (new_x, new_y);
@@ -97,7 +98,8 @@ fn save_window_state(app_handle: &AppHandle) {
         return;
     };
 
-    let (width, height) = match window.inner_size() {
+    // 保存 outer_size 和 outer_position（精确匹配窗口实际显示）
+    let (width, height) = match window.outer_size() {
         Ok(size) => (size.width as f64, size.height as f64),
         Err(_) => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
     };
@@ -122,7 +124,7 @@ fn save_window_state(app_handle: &AppHandle) {
             eprintln!("Failed to save window state: {}", e);
         } else {
             #[cfg(debug_assertions)]
-            println!("Saved window state to {:?}: {:?}", path, state);
+            println!("Saved window state: {:?}", state);
         }
     }
 }
@@ -137,13 +139,15 @@ fn load_window_state(app_handle: &AppHandle) -> WindowState {
     match std::fs::read_to_string(&path) {
         Ok(content) => match serde_json::from_str::<WindowState>(&content) {
             Ok(mut state) => {
-                // 限制窗口尺寸到合理范围，而不是直接重置为默认值
+                // 限制窗口尺寸到合理范围
                 if state.width < MIN_WINDOW_WIDTH {
                     state.width = MIN_WINDOW_WIDTH;
                 }
                 if state.height < MIN_WINDOW_HEIGHT {
                     state.height = MIN_WINDOW_HEIGHT;
                 }
+                #[cfg(debug_assertions)]
+                println!("Loaded window state: {:?}", state);
                 state
             }
             Err(e) => {
@@ -569,8 +573,20 @@ fn main() {
                             )
                         }
                         _ => {
-                            let (w, h) = (window_state.width, window_state.height);
-                            (DEFAULT_WINDOW_WIDTH - w / 2.0, DEFAULT_WINDOW_HEIGHT - h / 2.0)
+                            // 基于屏幕尺寸居中
+                            if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+                                let wa = monitor.work_area();
+                                let screen_width = wa.size.width as f64;
+                                let screen_height = wa.size.height as f64;
+                                let screen_x = wa.position.x as f64;
+                                let screen_y = wa.position.y as f64;
+                                (
+                                    screen_x + (screen_width - window_state.width) / 2.0,
+                                    screen_y + (screen_height - window_state.height) / 2.0,
+                                )
+                            } else {
+                                (0.0, 0.0)
+                            }
                         }
                     };
 
@@ -580,7 +596,7 @@ fn main() {
                         WebviewUrl::External(server_url.parse().unwrap()),
                     )
                     .title("Go Magic")
-                    .inner_size(window_state.width, window_state.height)
+                    .outer_size(window_state.width, window_state.height)
                     .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
                     .position(x, y)
                     .focused(true)
@@ -613,9 +629,16 @@ fn main() {
                     #[cfg(debug_assertions)]
                     println!("Application ready");
 
-                    let saved_state = load_window_state(&app_handle);
-                    #[cfg(debug_assertions)]
-                    println!("Final window state after creation: {:?}", saved_state);
+                    // 验证窗口创建后的实际尺寸
+                    if let Ok(actual_size) = window.outer_size() {
+                        #[cfg(debug_assertions)]
+                        {
+                            println!(
+                                "Window size verification - Expected: {:.0}x{:.0}, Actual: {}x{}",
+                                window_state.width, window_state.height, actual_size.width, actual_size.height
+                            );
+                        }
+                    }
                 }
                 Err(e) => {
                     let error_msg = match &e {
