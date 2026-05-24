@@ -6,6 +6,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Go Magic",
         "width": 1400,
         "height": 900,
@@ -13,7 +14,11 @@
         "minHeight": 700,
         "center": true,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "focus": true,
+        "visible": true
       }
     ],
     "security": {
@@ -30,9 +35,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "go-magic*": "./resources/*"
-    }
+    "resources": ["resources"]
   },
   "plugins": {
     "shell": {

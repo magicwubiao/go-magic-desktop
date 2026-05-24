@@ -339,6 +339,25 @@ jobs:
           echo "=== File sizes ==="
           du -h bundle-output/*
 
+      - name: Verify bundle contains frontend resources
+        shell: bash
+        run: |
+          echo "=== Checking for installer packages ==="
+          if ls bundle-output/*.exe bundle-output/*.msi bundle-output/*.dmg bundle-output/*.AppImage bundle-output/*.deb 2>/dev/null; then
+            echo "Installer packages found"
+          else
+            echo "WARNING: No installer packages found!"
+          fi
+
+          echo "=== Checking web-dist content ==="
+          if [ -d "web-dist" ] && [ -f "web-dist/index.html" ]; then
+            echo "web-dist/index.html exists"
+            head -c 200 web-dist/index.html
+            echo ""
+          else
+            echo "WARNING: web-dist/index.html not found!"
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
