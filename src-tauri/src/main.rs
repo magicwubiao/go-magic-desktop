@@ -1,6 +1,6 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Go Magic Desktop - 进程分离模式
+//! Go Magic Desktop - Process Isolation Mode
 
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
@@ -9,10 +9,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 // ============================================================================
-// 常量配置
+// Constants Configuration
 // ============================================================================
 
 const DEFAULT_PORTS: &[u16] = &[5000, 5001, 5002, 5003, 5004, 8080, 3000];
@@ -20,7 +20,7 @@ const HEALTH_CHECK_TIMEOUT_SECS: u64 = 60;
 const HEALTH_CHECK_INTERVAL_MS: u64 = 500;
 
 // ============================================================================
-// 后端进程管理
+// Backend Process Management
 // ============================================================================
 
 struct BackendState {
@@ -32,7 +32,7 @@ struct BackendState {
 static BACKEND_STATE: Mutex<Option<BackendState>> = Mutex::new(None);
 
 // --------------------------------------------------------------------------
-// 端口管理
+// Port Management
 // --------------------------------------------------------------------------
 
 fn is_port_available(port: u16) -> bool {
@@ -49,7 +49,7 @@ fn pick_available_port() -> Option<u16> {
 }
 
 // --------------------------------------------------------------------------
-// 健康检查
+// Health Check
 // --------------------------------------------------------------------------
 
 fn check_backend_health(port: u16) -> bool {
@@ -64,7 +64,7 @@ fn check_backend_health(port: u16) -> bool {
         .unwrap_or(false)
 }
 
-fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
+fn wait_for_backend_ready<R: Runtime>(port: u16, app_handle: &AppHandle<R>) -> bool {
     let start = Instant::now();
 
     #[cfg(debug_assertions)]
@@ -93,7 +93,7 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
 }
 
 // --------------------------------------------------------------------------
-// 进程控制
+// Process Control
 // --------------------------------------------------------------------------
 
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
@@ -126,7 +126,7 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, u16)> {
+fn start_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) -> Option<(Child, u16)> {
     let port = pick_available_port()?;
 
     #[cfg(debug_assertions)]
@@ -166,7 +166,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
     #[cfg(debug_assertions)]
     println!("Backend process spawned, PID: {:?}", child.id());
 
-    // 后端输出读取线程
+    // Backend output capture thread
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     thread::spawn(move || {
@@ -228,7 +228,7 @@ fn stop_backend() {
     }
 }
 
-fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
+fn restart_backend<R: Runtime>(app_handle: &AppHandle<R>, resource_dir: &Path) {
     #[cfg(debug_assertions)]
     println!("Restarting backend...");
     stop_backend();
@@ -247,7 +247,7 @@ fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
 }
 
 // ============================================================================
-// Tauri 命令
+// Tauri Commands
 // ============================================================================
 
 #[tauri::command]
@@ -259,7 +259,7 @@ fn get_backend_port() -> Option<u16> {
 }
 
 #[tauri::command]
-fn restart_backend_cmd(app_handle: AppHandle) {
+fn restart_backend_cmd<R: Runtime>(app_handle: AppHandle<R>) {
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
         restart_backend(&app_handle, &resource_dir);
     }
@@ -288,7 +288,7 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 }
 
 // ============================================================================
-// 主程序
+// Main Entry
 // ============================================================================
 
 fn main() {
@@ -343,7 +343,7 @@ fn main() {
                     .build()
                     .expect("Failed to create window");
 
-                    // 调试模式下打开 DevTools
+                    // Open DevTools in debug mode
                     #[cfg(debug_assertions)]
                     {
                         window.open_devtools();
