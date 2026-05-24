@@ -15,8 +15,8 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 // Window State Management
 // ============================================================================
 
-const DEFAULT_WINDOW_WIDTH: f64 = 1400.0;
-const DEFAULT_WINDOW_HEIGHT: f64 = 900.0;
+const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 720.0;
 const MIN_WINDOW_WIDTH: f64 = 1000.0;
 const MIN_WINDOW_HEIGHT: f64 = 700.0;
 
@@ -137,11 +137,12 @@ fn load_window_state(app_handle: &AppHandle) -> WindowState {
     match std::fs::read_to_string(&path) {
         Ok(content) => match serde_json::from_str::<WindowState>(&content) {
             Ok(mut state) => {
+                // 限制窗口尺寸到合理范围，而不是直接重置为默认值
                 if state.width < MIN_WINDOW_WIDTH {
-                    state.width = DEFAULT_WINDOW_WIDTH;
+                    state.width = MIN_WINDOW_WIDTH;
                 }
                 if state.height < MIN_WINDOW_HEIGHT {
-                    state.height = DEFAULT_WINDOW_HEIGHT;
+                    state.height = MIN_WINDOW_HEIGHT;
                 }
                 state
             }
@@ -264,6 +265,18 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
                 }
             }
 
+            let resources_relative = exe_dir.join("resources");
+            if resources_relative.exists() {
+                for name in &binary_names {
+                    let path = resources_relative.join(name);
+                    if path.exists() {
+                        #[cfg(debug_assertions)]
+                        println!("Found backend in exe dir resources: {:?}", path);
+                        return Some(path);
+                    }
+                }
+            }
+
             #[cfg(target_os = "macos")]
             {
                 let resources_dir = exe_dir.join("../Resources");
@@ -273,30 +286,6 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
                         if path.exists() {
                             #[cfg(debug_assertions)]
                             println!("Found backend in macOS Resources: {:?}", path);
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-
-            #[cfg(target_os = "linux")]
-            {
-                for name in &binary_names {
-                    let path = exe_dir.join(name);
-                    if path.exists() {
-                        #[cfg(debug_assertions)]
-                        println!("Found backend in linux exe dir: {:?}", path);
-                        return Some(path);
-                    }
-                }
-
-                let resources_relative = exe_dir.join("resources");
-                if resources_relative.exists() {
-                    for name in &binary_names {
-                        let path = resources_relative.join(name);
-                        if path.exists() {
-                            #[cfg(debug_assertions)]
-                            println!("Found backend in linux resources dir: {:?}", path);
                             return Some(path);
                         }
                     }
