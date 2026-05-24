@@ -246,31 +246,6 @@ fn show_error_dialog(_app_handle: &AppHandle, title: &str, message: &str) {
     eprintln!("{}: {}", title, message);
 }
 
-#[cfg(not(target_os = "windows"))]
-fn ensure_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(metadata) = std::fs::metadata(path) {
-        let mut perms = metadata.permissions();
-        if (perms.mode() & 0o111) != 0o111 {
-            perms.set_mode(perms.mode() | 0o755);
-            if std::fs::set_permissions(path, perms).is_ok() {
-                #[cfg(debug_assertions)]
-                println!("Set executable permissions for: {:?}", path);
-                return true;
-            }
-        } else {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(target_os = "windows")]
-fn ensure_executable(_path: &Path) -> bool {
-    true
-}
-
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     let binary_names = vec!["go-magic.exe", "go-magic"];
