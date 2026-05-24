@@ -20,7 +20,7 @@ const DEFAULT_WINDOW_HEIGHT: f64 = 900.0;
 const MIN_WINDOW_WIDTH: f64 = 1000.0;
 const MIN_WINDOW_HEIGHT: f64 = 700.0;
 
-#[derive(serde::Deserialize, serde::Serialize, Clone)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 struct WindowState {
     width: f64,
     height: f64,
@@ -55,37 +55,36 @@ fn adjust_position_for_screen(
     app_handle: &AppHandle,
 ) -> (f64, f64) {
     if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
-        if let Ok(wa) = monitor.work_area() {
-            let screen_x = wa.x as f64;
-            let screen_y = wa.y as f64;
-            let screen_width = wa.width as f64;
-            let screen_height = wa.height as f64;
+        let wa = monitor.work_area();
+        let screen_x = wa.x as f64;
+        let screen_y = wa.y as f64;
+        let screen_width = wa.width as f64;
+        let screen_height = wa.height as f64;
 
-            let mut new_x = x;
-            let mut new_y = y;
+        let mut new_x = x;
+        let mut new_y = y;
 
-            if new_x + width > screen_x + screen_width {
-                new_x = screen_x + screen_width - width;
-            }
-            if new_x < screen_x {
-                new_x = screen_x;
-            }
-
-            if new_y + height > screen_y + screen_height {
-                new_y = screen_y + screen_height - height;
-            }
-            if new_y < screen_y {
-                new_y = screen_y;
-            }
-
-            #[cfg(debug_assertions)]
-            println!(
-                "Adjusted position: ({:.0}, {:.0}) -> ({:.0}, {:.0}) to fit screen ({:.0}x{:.0})",
-                x, y, new_x, new_y, screen_width, screen_height
-            );
-
-            return (new_x, new_y);
+        if new_x + width > screen_x + screen_width {
+            new_x = screen_x + screen_width - width;
         }
+        if new_x < screen_x {
+            new_x = screen_x;
+        }
+
+        if new_y + height > screen_y + screen_height {
+            new_y = screen_y + screen_height - height;
+        }
+        if new_y < screen_y {
+            new_y = screen_y;
+        }
+
+        #[cfg(debug_assertions)]
+        println!(
+            "Adjusted position: ({:.0}, {:.0}) -> ({:.0}, {:.0}) to fit screen ({:.0}x{:.0})",
+            x, y, new_x, new_y, screen_width, screen_height
+        );
+
+        return (new_x, new_y);
     }
     (x, y)
 }
