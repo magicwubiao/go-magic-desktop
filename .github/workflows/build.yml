@@ -30,7 +30,7 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
@@ -222,7 +222,7 @@ jobs:
       - name: Install UPX (Linux)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y upx
 
       - name: Install UPX (macOS)
@@ -265,7 +265,7 @@ jobs:
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update
+          sudo apt-get update || true
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
