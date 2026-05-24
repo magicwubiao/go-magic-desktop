@@ -292,7 +292,7 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 // ============================================================================
 
 fn main() {
-    tauri::Builder::default()
+    tauri::Builder::<tauri::Wry>::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
