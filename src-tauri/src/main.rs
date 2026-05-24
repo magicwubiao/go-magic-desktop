@@ -12,6 +12,85 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // ============================================================================
+// Window State Management
+// ============================================================================
+
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+struct WindowState {
+    width: f64,
+    height: f64,
+    x: Option<f64>,
+    y: Option<f64>,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        WindowState {
+            width: 1400.0,
+            height: 900.0,
+            x: None,
+            y: None,
+        }
+    }
+}
+
+fn get_window_state_path(app_handle: &AppHandle) -> Option<PathBuf> {
+    app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("window-state.json"))
+}
+
+fn save_window_state(app_handle: &AppHandle) {
+    let Some(path) = get_window_state_path(app_handle) else {
+        return;
+    };
+    let Some(window) = app_handle.get_webview_window("main") else {
+        return;
+    };
+
+    let state = WindowState {
+        width: match window.inner_size() {
+            Ok(size) => size.width as f64,
+            Err(_) => 1400.0,
+        },
+        height: match window.inner_size() {
+            Ok(size) => size.height as f64,
+            Err(_) => 900.0,
+        },
+        x: match window.inner_position() {
+            Ok(pos) => Some(pos.x as f64),
+            Err(_) => None,
+        },
+        y: match window.inner_position() {
+            Ok(pos) => Some(pos.y as f64),
+            Err(_) => None,
+        },
+    };
+
+    if let Ok(json) = serde_json::to_string_pretty(&state) {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(&PathBuf::from("")));
+        let _ = std::fs::write(&path, json);
+        #[cfg(debug_assertions)]
+        println!("Saved window state to {:?}", path);
+    }
+}
+
+fn load_window_state(app_handle: &AppHandle) -> WindowState {
+    let Some(path) = get_window_state_path(app_handle) else {
+        return WindowState::default();
+    };
+    if !path.exists() {
+        return WindowState::default();
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str::<WindowState>(&content).unwrap_or_default(),
+        Err(_) => WindowState::default(),
+    }
+}
+
+// ============================================================================
 // Constants Configuration
 // ============================================================================
 
@@ -475,20 +554,27 @@ fn main() {
 
                     thread::sleep(Duration::from_millis(300));
 
-                    let window = WebviewWindowBuilder::new(
+                    let window_state = load_window_state(&app_handle);
+
+                    let mut window_builder = WebviewWindowBuilder::new(
                         app,
                         "main",
                         WebviewUrl::External(server_url.parse().unwrap()),
                     )
                     .title("Go Magic")
-                    .inner_size(1400.0, 900.0)
+                    .inner_size(window_state.width, window_state.height)
                     .min_inner_size(1000.0, 700.0)
-                    .center()
                     .focused(true)
                     .resizable(true)
-                    .fullscreen(false)
-                    .build()
-                    .expect("Failed to create window");
+                    .fullscreen(false);
+
+                    if let (Some(x), Some(y)) = (window_state.x, window_state.y) {
+                        window_builder = window_builder.position(x, y);
+                    } else {
+                        window_builder = window_builder.center();
+                    }
+
+                    let window = window_builder.build().expect("Failed to create window");
 
                     // Open DevTools in debug mode
                     #[cfg(debug_assertions)]
@@ -536,9 +622,17 @@ fn main() {
             check_backend_health_cmd,
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                stop_backend();
-                window.app_handle().exit(0);
+            let app_handle = window.app_handle().clone();
+            match event {
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    save_window_state(&app_handle);
+                    stop_backend();
+                    app_handle.exit(0);
+                }
+                tauri::WindowEvent::Resized { .. } | tauri::WindowEvent::Moved { .. } => {
+                    save_window_state(&app_handle);
+                }
+                _ => {}
             }
         })
         .run(tauri::generate_context!())

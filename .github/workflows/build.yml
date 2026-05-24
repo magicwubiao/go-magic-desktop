@@ -21,7 +21,6 @@ env:
   RUST_LOG: "info"
 
 jobs:
-  # 代码质量检查
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -57,7 +56,6 @@ jobs:
       - name: Run tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast
 
-  # 构建桌面应用（Windows, macOS, Linux）
   build-desktop:
     needs: lint
     strategy:
@@ -75,10 +73,6 @@ jobs:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact_name: go-magic-desktop-linux-x64
-            goext: ""
-          - platform: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-            artifact_name: go-magic-desktop-linux-arm64
             goext: ""
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
@@ -165,7 +159,6 @@ jobs:
       - name: Install root npm dependencies
         run: npm install
 
-      # ========== 前端构建 ==========
       - name: Build Web UI
         shell: bash
         run: |
@@ -193,7 +186,6 @@ jobs:
           cp -r go-magic/internal/server/dist web-dist/
           ls -la web-dist/
 
-      # ========== 后端构建 ==========
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -207,8 +199,7 @@ jobs:
           EXT: ${{ matrix.goext }}
         run: |
           cd go-magic
-          
-          # 根据目标平台设置正确的 GOOS 和 GOARCH
+
           case "${{ matrix.target }}" in
             x86_64-apple-darwin)
               export GOOS=darwin
@@ -222,21 +213,16 @@ jobs:
               export GOOS=linux
               export GOARCH=amd64
               ;;
-            aarch64-unknown-linux-gnu)
-              export GOOS=linux
-              export GOARCH=arm64
-              ;;
             x86_64-pc-windows-msvc)
               export GOOS=windows
               export GOARCH=amd64
               ;;
           esac
-          
+
           echo "Building for GOOS=$GOOS, GOARCH=$GOARCH"
           CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
           ls -la go-magic${{ env.EXT }}
 
-      # ========== 打包资源 ==========
       - name: Prepare resources directory
         shell: bash
         run: |
@@ -254,7 +240,6 @@ jobs:
           fi
           ls -la src-tauri/resources/
 
-      # ========== Linux 依赖 ==========
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -271,34 +256,15 @@ jobs:
             libssl-dev \
             libdbus-1-dev
 
-      - name: Install ARM64 cross compiler
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        shell: bash
-        run: |
-          sudo dpkg --add-architecture arm64
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          sudo apt-get install -y libssl-dev:arm64 libc6-dev-arm64-cross
-          # Set cross-compilation environment for OpenSSL
-          echo "AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu" >> $GITHUB_ENV
-
-      # ========== 安装 Tauri 依赖 ==========
       - name: Install Tauri dependencies
         run: |
           cd src-tauri
           npm install
 
-      # ========== Tauri 构建 ==========
       - name: Build Tauri app
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'aarch64-linux-gnu-gcc' || '' }}
-          PKG_CONFIG_SYSROOT_DIR: /usr
-          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
           cd src-tauri && npx tauri build --target ${{ matrix.target }}
 
-      # ========== 收集产物 ==========
       - name: Prepare bundle output
         shell: bash
         run: |
@@ -329,7 +295,6 @@ jobs:
           path: bundle-output/*
           retention-days: 30
 
-  # 构建 Go CLI 多平台版本
   build-go-cli:
     runs-on: ubuntu-latest
     strategy:
@@ -377,7 +342,6 @@ jobs:
           path: go-magic/go-magic-*
           retention-days: 30
 
-  # 创建发布包
   create-release:
     needs: [build-desktop, build-go-cli]
     runs-on: ubuntu-latest
@@ -420,7 +384,6 @@ jobs:
             ### CLI Tools
             Download the CLI binary for your platform:
             - `go-magic-linux-amd64`
-            - `go-magic-linux-arm64`
             - `go-magic-darwin-amd64`
             - `go-magic-darwin-arm64`
             - `go-magic-windows-amd64.exe`
