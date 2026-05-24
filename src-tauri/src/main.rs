@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::{Dialog, MessageDialogButtons, MessageDialogKind};
 
 // ============================================================================
 // Constants Configuration
@@ -96,22 +97,140 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
 // Process Control
 // --------------------------------------------------------------------------
 
+fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
+    let _ = Dialog::message(message)
+        .title(title)
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::Ok)
+        .blocking_show(app_handle);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let mut perms = metadata.permissions();
+        if !perms.mode() & 0o111 != 0 {
+            perms.set_mode(perms.mode() | 0o755);
+            if std::fs::set_permissions(path, perms).is_ok() {
+                #[cfg(debug_assertions)]
+                println!("Set executable permissions for: {:?}", path);
+                return true;
+            }
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_executable(_path: &Path) -> bool {
+    true // Windows doesn't use executable bits like Unix
+}
+
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    println!("Searching for backend in resource dir: {:?}", resource_dir);
+    
+    // 列出资源目录的内容，帮助调试
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(entries) = std::fs::read_dir(resource_dir) {
+            println!("Resource dir contents:");
+            for entry in entries.flatten() {
+                println!("  - {:?}", entry.path());
+            }
+        }
+    }
+
     #[cfg(target_os = "windows")]
-    let names = vec!["go-magic.exe", "bin/go-magic.exe", "backends/go-magic.exe"];
+    let names = vec![
+        "go-magic.exe",
+        "resources/go-magic.exe",
+        "bin/go-magic.exe",
+        "backends/go-magic.exe",
+    ];
 
     #[cfg(not(target_os = "windows"))]
-    let names = vec!["go-magic", "bin/go-magic", "backends/go-magic"];
+    let names = vec![
+        "go-magic",
+        "resources/go-magic",
+        "bin/go-magic",
+        "backends/go-magic",
+    ];
 
+    // 1. 先在资源目录中查找（Tauri 标准打包位置）
     for name in &names {
         let path = resource_dir.join(name);
+        #[cfg(debug_assertions)]
+        println!("Checking in resource dir: {:?}", path);
         if path.exists() {
             #[cfg(debug_assertions)]
             println!("Found backend at: {:?}", path);
+            
+            // Ensure executable permissions
+            if !ensure_executable(&path) {
+                #[cfg(debug_assertions)]
+                eprintln!("Warning: Failed to set executable permissions for {:?}", path);
+            }
+            
             return Some(path);
         }
     }
 
+    // 2. 如果在资源目录没找到，尝试在可执行文件同级目录查找（某些打包方式）
+    if let Ok(exe_dir) = std::env::current_exe().and_then(|p| {
+        p.parent().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "No parent dir"))
+    }) {
+        #[cfg(debug_assertions)]
+        println!("Searching in exe dir: {:?}", exe_dir);
+        
+        for name in &names {
+            let path = exe_dir.join(name);
+            #[cfg(debug_assertions)]
+            println!("Checking in exe dir: {:?}", path);
+            if path.exists() {
+                #[cfg(debug_assertions)]
+                println!("Found backend in exe dir: {:?}", path);
+                
+                if !ensure_executable(&path) {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Warning: Failed to set executable permissions for {:?}", path);
+                }
+                
+                return Some(path);
+            }
+        }
+        
+        // 2.1 macOS App Bundle 特殊处理：尝试在 ../Resources 查找
+        #[cfg(target_os = "macos")]
+        {
+            let resources_dir = exe_dir.join("../Resources");
+            if resources_dir.exists() {
+                #[cfg(debug_assertions)]
+                println!("Searching in macOS Resources dir: {:?}", resources_dir);
+                
+                for name in &names {
+                    let path = resources_dir.join(name);
+                    if path.exists() {
+                        #[cfg(debug_assertions)]
+                        println!("Found backend in macOS Resources: {:?}", path);
+                        
+                        if !ensure_executable(&path) {
+                            #[cfg(debug_assertions)]
+                            eprintln!("Warning: Failed to set executable permissions for {:?}", path);
+                        }
+                        
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. 最后尝试 PATH
     #[cfg(target_os = "windows")]
     let binary = "go-magic.exe";
     #[cfg(not(target_os = "windows"))]
@@ -126,13 +245,20 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, u16)> {
-    let port = pick_available_port()?;
+enum BackendError {
+    NoPortAvailable,
+    BackendNotFound,
+    SpawnFailed(String),
+    HealthCheckTimeout,
+}
+
+fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Result<(Child, u16), BackendError> {
+    let port = pick_available_port().ok_or(BackendError::NoPortAvailable)?;
 
     #[cfg(debug_assertions)]
     println!("Selected port: {}", port);
 
-    let backend_path = find_backend_path(resource_dir)?;
+    let backend_path = find_backend_path(resource_dir).ok_or(BackendError::BackendNotFound)?;
 
     #[cfg(target_os = "windows")]
     let mut child = {
@@ -147,7 +273,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .ok()?
+            .map_err(|e| BackendError::SpawnFailed(e.to_string()))?
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -160,7 +286,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .ok()?
+            .map_err(|e| BackendError::SpawnFailed(e.to_string()))?
     };
 
     #[cfg(debug_assertions)]
@@ -201,11 +327,11 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
     if wait_for_backend_ready(port, app_handle) {
         #[cfg(debug_assertions)]
         println!("Backend started successfully");
-        Some((child, port))
+        Ok((child, port))
     } else {
         eprintln!("Backend failed to start within timeout");
         let _ = child.kill();
-        None
+        Err(BackendError::HealthCheckTimeout)
     }
 }
 
@@ -234,15 +360,26 @@ fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
     stop_backend();
     thread::sleep(Duration::from_secs(1));
 
-    if let Some((process, port)) = start_backend(app_handle, resource_dir) {
-        if let Ok(mut guard) = BACKEND_STATE.lock() {
-            *guard = Some(BackendState {
-                process,
-                port,
-                start_time: Instant::now(),
-            });
+    match start_backend(app_handle, resource_dir) {
+        Ok((process, port)) => {
+            if let Ok(mut guard) = BACKEND_STATE.lock() {
+                *guard = Some(BackendState {
+                    process,
+                    port,
+                    start_time: Instant::now(),
+                });
+            }
+            let _ = app_handle.emit("backend-restarted", port);
         }
-        let _ = app_handle.emit("backend-restarted", port);
+        Err(e) => {
+            let error_msg = match e {
+                BackendError::NoPortAvailable => "No available port found".to_string(),
+                BackendError::BackendNotFound => "Backend executable not found".to_string(),
+                BackendError::SpawnFailed(msg) => format!("Failed to start backend: {}", msg),
+                BackendError::HealthCheckTimeout => "Backend health check timed out".to_string(),
+            };
+            eprintln!("Restart failed: {}", error_msg);
+        }
     }
 }
 
@@ -301,17 +438,25 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_log::Builder::new().build())
         .setup(|app| {
-            let resource_dir = app
-                .path()
-                .resource_dir()
-                .expect("Failed to get resource directory");
+            let resource_dir = match app.path().resource_dir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    let app_handle = app.handle().clone();
+                    show_error_dialog(
+                        &app_handle,
+                        "启动错误",
+                        &format!("无法获取资源目录: {}", e),
+                    );
+                    return Err(e.into());
+                }
+            };
             let app_handle = app.handle().clone();
 
             #[cfg(debug_assertions)]
             println!("Resource directory: {:?}", resource_dir);
 
             match start_backend(&app_handle, &resource_dir) {
-                Some((process, port)) => {
+                Ok((process, port)) => {
                     {
                         let mut guard = BACKEND_STATE.lock().unwrap();
                         *guard = Some(BackendState {
@@ -362,8 +507,16 @@ fn main() {
                     #[cfg(debug_assertions)]
                     println!("Application ready");
                 }
-                None => {
-                    eprintln!("Failed to start backend");
+                Err(e) => {
+                    let error_msg = match &e {
+                        BackendError::NoPortAvailable => "没有可用的端口".to_string(),
+                        BackendError::BackendNotFound => format!("找不到后端可执行文件\n请检查资源目录: {:?}", resource_dir),
+                        BackendError::SpawnFailed(msg) => format!("启动后端失败: {}", msg),
+                        BackendError::HealthCheckTimeout => "后端健康检查超时，请检查后端是否正常工作".to_string(),
+                    };
+                    
+                    eprintln!("Failed to start backend: {:?}", error_msg);
+                    show_error_dialog(&app_handle, "应用启动失败", &error_msg);
                     return Err("Backend startup failed".into());
                 }
             }

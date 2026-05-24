@@ -48,16 +48,8 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Auto format and commit
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add -A
-            git commit -m "style: auto-format with rustfmt" || echo "No changes"
-            git push || echo "Push failed or no changes"
-          fi
+      - name: Check formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
       - name: Run clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
@@ -170,6 +162,9 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      - name: Install root npm dependencies
+        run: npm install
+
       # ========== 前端构建 ==========
       - name: Build Web UI
         shell: bash
@@ -202,7 +197,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.22'
           cache: true
           cache-dependency-path: go-magic/go.sum
 
@@ -212,36 +207,34 @@ jobs:
           EXT: ${{ matrix.goext }}
         run: |
           cd go-magic
+          
+          # 根据目标平台设置正确的 GOOS 和 GOARCH
+          case "${{ matrix.target }}" in
+            x86_64-apple-darwin)
+              export GOOS=darwin
+              export GOARCH=amd64
+              ;;
+            aarch64-apple-darwin)
+              export GOOS=darwin
+              export GOARCH=arm64
+              ;;
+            x86_64-unknown-linux-gnu)
+              export GOOS=linux
+              export GOARCH=amd64
+              ;;
+            aarch64-unknown-linux-gnu)
+              export GOOS=linux
+              export GOARCH=arm64
+              ;;
+            x86_64-pc-windows-msvc)
+              export GOOS=windows
+              export GOARCH=amd64
+              ;;
+          esac
+          
+          echo "Building for GOOS=$GOOS, GOARCH=$GOARCH"
           CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
           ls -la go-magic${{ env.EXT }}
-
-      # ========== UPX 压缩 ==========
-      - name: Install UPX (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y upx
-
-      - name: Install UPX (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: brew install upx
-
-      - name: Install UPX (Windows)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          choco install upx
-
-      - name: Compress backend with UPX
-        shell: bash
-        env:
-          EXT: ${{ matrix.goext }}
-        run: |
-          echo "Before UPX:"
-          ls -lh go-magic/go-magic${{ env.EXT }}
-          upx --best --lzma go-magic/go-magic${{ env.EXT }} || echo "UPX failed, using uncompressed binary"
-          echo "After UPX:"
-          ls -lh go-magic/go-magic${{ env.EXT }}
 
       # ========== 打包资源 ==========
       - name: Prepare resources directory
@@ -250,12 +243,15 @@ jobs:
           mkdir -p src-tauri/resources
           ls -la src-tauri/resources/
 
-      - name: Copy backend to resources
+      - name: Copy backend to resources and set executable permissions
         shell: bash
         env:
           EXT: ${{ matrix.goext }}
         run: |
           cp go-magic/go-magic${{ env.EXT }} src-tauri/resources/go-magic${{ env.EXT }}
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            chmod +x src-tauri/resources/go-magic${{ env.EXT }}
+          fi
           ls -la src-tauri/resources/
 
       # ========== Linux 依赖 ==========
@@ -303,18 +299,6 @@ jobs:
           cd src-tauri && npx tauri build --target ${{ matrix.target }}
 
       # ========== 收集产物 ==========
-      - name: Compress Tauri binary with UPX (Unix)
-        if: matrix.platform != 'windows-latest'
-        run: |
-          BINARY="src-tauri/target/${{ matrix.target }}/release/go-magic-desktop"
-          if [ -f "$BINARY" ]; then
-            echo "Before UPX:"
-            ls -lh $BINARY
-            upx --best --lzma $BINARY || echo "UPX compression failed, using original"
-            echo "After UPX:"
-            ls -lh $BINARY
-          fi
-
       - name: Prepare bundle output
         shell: bash
         run: |
@@ -364,7 +348,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.22'
           cache: true
           cache-dependency-path: go-magic/go.sum
 

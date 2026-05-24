@@ -33,13 +33,18 @@
     "targets": "all",
     "resources": ["resources"],
     "windows": {
+      "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
+      "timestampUrl": "",
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
         "compression": "lzma",
-        "displayLanguageSelector": true
+        "displayLanguageSelector": true,
+        "runAfterFinish": true,
+        "createDesktopShortcut": true,
+        "createStartMenuShortcut": true
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
@@ -47,11 +52,19 @@
       }
     },
     "macOS": {
-      "minimumSystemVersion": "10.15"
+      "minimumSystemVersion": "10.15",
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null
     },
     "linux": {
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libssl3"]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
       }
     }
   },
