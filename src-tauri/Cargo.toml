@@ -12,7 +12,7 @@ rust-version = "1.75"
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.1", default-features = false, features = ["devtools"] }
+tauri = { version = "2.1", default-features = false, features = ["devtools", "wry"] }
 tauri-plugin-shell = "2.0"
 tauri-plugin-fs = "2.0"
 tauri-plugin-os = "2.0"
