@@ -223,6 +223,19 @@ jobs:
           CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
           ls -la go-magic${{ env.EXT }}
 
+      - name: Copy backend to resources directory
+        shell: bash
+        env:
+          EXT: ${{ matrix.goext }}
+        run: |
+          mkdir -p src-tauri/resources
+          cp go-magic/go-magic${{ env.EXT }} src-tauri/resources/go-magic${{ env.EXT }}
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            chmod +x src-tauri/resources/go-magic${{ env.EXT }}
+          fi
+          echo "=== Resources directory ==="
+          ls -la src-tauri/resources/
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -247,79 +260,6 @@ jobs:
       - name: Build Tauri app
         run: |
           cd src-tauri && npx tauri build --target ${{ matrix.target }}
-
-      - name: Copy backend to bundle
-        shell: bash
-        env:
-          EXT: ${{ matrix.goext }}
-        run: |
-          TARGET="${{ matrix.target }}"
-
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            # Windows
-            if [ -f "src-tauri/target/$TARGET/release/go-magic-desktop.exe" ]; then
-              cp "go-magic/go-magic${EXT}" "src-tauri/target/$TARGET/release/go-magic${EXT}"
-            fi
-
-            if [ -d "src-tauri/target/$TARGET/release/bundle/nsis" ]; then
-              find "src-tauri/target/$TARGET/release/bundle/nsis" -name "*.exe" -type f | while read -r installer; do
-                echo "NSIS installer: $installer"
-                cp "go-magic/go-magic${EXT}" "$(dirname "$installer")/go-magic${EXT}"
-              done
-            fi
-
-            if [ -d "src-tauri/target/$TARGET/release/bundle/msi" ]; then
-              find "src-tauri/target/$TARGET/release/bundle/msi" -name "*.msi" -type f | while read -r installer; do
-                echo "MSI installer: $installer"
-                cp "go-magic/go-magic${EXT}" "$(dirname "$installer")/go-magic${EXT}"
-              done
-            fi
-
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            # macOS
-            if [ -d "src-tauri/target/$TARGET/release/bundle/macos" ]; then
-              APP_DIR="src-tauri/target/$TARGET/release/bundle/macos/Go Magic.app"
-              if [ -d "$APP_DIR" ]; then
-                mkdir -p "$APP_DIR/Contents/MacOS"
-                cp "go-magic/go-magic${EXT}" "$APP_DIR/Contents/MacOS/go-magic"
-                chmod +x "$APP_DIR/Contents/MacOS/go-magic"
-              fi
-            fi
-
-            if [ -d "src-tauri/target/$TARGET/release/bundle/dmg" ]; then
-              find "src-tauri/target/$TARGET/release/bundle/dmg" -name "*.dmg" -type f | while read -r dmg; do
-                echo "DMG: $dmg"
-                cp "go-magic/go-magic${EXT}" "$(dirname "$dmg")/go-magic"
-              done
-            fi
-
-          else
-            # Linux
-            if [ -f "src-tauri/target/$TARGET/release/go-magic-desktop" ]; then
-              cp "go-magic/go-magic${EXT}" "src-tauri/target/$TARGET/release/go-magic"
-              chmod +x "src-tauri/target/$TARGET/release/go-magic"
-            fi
-
-            if [ -d "src-tauri/target/$TARGET/release/bundle/appimage" ]; then
-              find "src-tauri/target/$TARGET/release/bundle/appimage" -name "*.AppImage" -type f | while read -r appimage; do
-                echo "AppImage: $appimage"
-                cp "go-magic/go-magic${EXT}" "$(dirname "$appimage")/go-magic"
-                chmod +x "$(dirname "$appimage")/go-magic"
-              done
-            fi
-
-            if [ -d "src-tauri/target/$TARGET/release/bundle/deb" ]; then
-              find "src-tauri/target/$TARGET/release/bundle/deb" -name "*.deb" -type f | while read -r deb; do
-                echo "DEB: $deb"
-                cp "go-magic/go-magic${EXT}" "$(dirname "$deb")/go-magic"
-                chmod +x "$(dirname "$deb")/go-magic"
-              done
-            fi
-          fi
-
-          echo "=== After copying backend ==="
-          ls -la src-tauri/target/$TARGET/release/ || true
-          ls -la src-tauri/target/$TARGET/release/bundle/ || true
 
       - name: Prepare bundle output
         shell: bash
