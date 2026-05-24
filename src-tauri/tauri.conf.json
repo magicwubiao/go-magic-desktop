@@ -39,12 +39,7 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"],
-        "compression": "lzma",
-        "displayLanguageSelector": true,
-        "runAfterFinish": true,
-        "createDesktopShortcut": true,
-        "createStartMenuShortcut": true
+        "compression": "lzma"
       },
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
@@ -62,9 +57,6 @@
     "linux": {
       "deb": {
         "depends": ["libwebkit2gtk-4.1-0", "libssl3"]
-      },
-      "appimage": {
-        "bundleMediaFramework": true
       }
     }
   },
