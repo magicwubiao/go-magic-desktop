@@ -460,7 +460,7 @@ fn main() {
                 Ok(dir) => dir,
                 Err(e) => {
                     let app_handle = app.handle().clone();
-                    show_error_dialog(&app_handle, "启动错误", &format!("无法获取资源目录: {}", e));
+                    show_error_dialog(&app_handle, "Startup Error", &format!("Failed to get resource directory: {}", e));
                     return Err(e.into());
                 }
             };
@@ -529,18 +529,18 @@ fn main() {
                 }
                 Err(e) => {
                     let error_msg = match &e {
-                        BackendError::NoPortAvailable => "没有可用的端口".to_string(),
+                        BackendError::NoPortAvailable => "No available port found".to_string(),
                         BackendError::BackendNotFound => {
-                            format!("找不到后端可执行文件\n请检查资源目录: {:?}", resource_dir)
+                            format!("Backend executable not found\nPlease check resource directory: {:?}", resource_dir)
                         }
-                        BackendError::SpawnFailed(msg) => format!("启动后端失败: {}", msg),
+                        BackendError::SpawnFailed(msg) => format!("Failed to start backend: {}", msg),
                         BackendError::HealthCheckTimeout => {
-                            "后端健康检查超时，请检查后端是否正常工作".to_string()
+                            "Backend health check timed out, please verify if backend is working correctly".to_string()
                         }
                     };
 
                     eprintln!("Failed to start backend: {:?}", error_msg);
-                    show_error_dialog(&app_handle, "应用启动失败", &error_msg);
+                    show_error_dialog(&app_handle, "Application Startup Failed", &error_msg);
                     return Err("Backend startup failed".into());
                 }
             }
