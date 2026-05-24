@@ -268,7 +268,10 @@ enum BackendError {
     HealthCheckTimeout,
 }
 
-fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Result<(Child, u16), BackendError> {
+fn start_backend(
+    app_handle: &AppHandle,
+    resource_dir: &Path,
+) -> Result<(Child, u16), BackendError> {
     let port = pick_available_port().ok_or(BackendError::NoPortAvailable)?;
 
     #[cfg(debug_assertions)]
@@ -457,11 +460,7 @@ fn main() {
                 Ok(dir) => dir,
                 Err(e) => {
                     let app_handle = app.handle().clone();
-                    show_error_dialog(
-                        &app_handle,
-                        "启动错误",
-                        &format!("无法获取资源目录: {}", e),
-                    );
+                    show_error_dialog(&app_handle, "启动错误", &format!("无法获取资源目录: {}", e));
                     return Err(e.into());
                 }
             };
@@ -508,9 +507,7 @@ fn main() {
                         window_builder = window_builder.center();
                     }
 
-                    let window = window_builder
-                        .build()
-                        .expect("Failed to create window");
+                    let window = window_builder.build().expect("Failed to create window");
 
                     #[cfg(debug_assertions)]
                     {
@@ -534,10 +531,7 @@ fn main() {
                     let error_msg = match &e {
                         BackendError::NoPortAvailable => "没有可用的端口".to_string(),
                         BackendError::BackendNotFound => {
-                            format!(
-                                "找不到后端可执行文件\n请检查资源目录: {:?}",
-                                resource_dir
-                            )
+                            format!("找不到后端可执行文件\n请检查资源目录: {:?}", resource_dir)
                         }
                         BackendError::SpawnFailed(msg) => format!("启动后端失败: {}", msg),
                         BackendError::HealthCheckTimeout => {
