@@ -1,4 +1,4 @@
-﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 //! Go Magic Desktop - Process Isolation Mode
 
@@ -108,7 +108,7 @@ fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
 #[cfg(not(target_os = "windows"))]
 fn ensure_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    
+
     if let Ok(metadata) = std::fs::metadata(path) {
         let mut perms = metadata.permissions();
         if !perms.mode() & 0o111 != 0 {
@@ -133,7 +133,7 @@ fn ensure_executable(_path: &Path) -> bool {
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     println!("Searching for backend in resource dir: {:?}", resource_dir);
-    
+
     // 列出资源目录的内容，帮助调试
     #[cfg(debug_assertions)]
     {
@@ -169,24 +169,28 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
         if path.exists() {
             #[cfg(debug_assertions)]
             println!("Found backend at: {:?}", path);
-            
+
             // Ensure executable permissions
             if !ensure_executable(&path) {
                 #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to set executable permissions for {:?}", path);
+                eprintln!(
+                    "Warning: Failed to set executable permissions for {:?}",
+                    path
+                );
             }
-            
+
             return Some(path);
         }
     }
 
     // 2. 如果在资源目录没找到，尝试在可执行文件同级目录查找（某些打包方式）
     if let Ok(exe_dir) = std::env::current_exe().and_then(|p| {
-        p.parent().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "No parent dir"))
+        p.parent()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "No parent dir"))
     }) {
         #[cfg(debug_assertions)]
         println!("Searching in exe dir: {:?}", exe_dir);
-        
+
         for name in &names {
             let path = exe_dir.join(name);
             #[cfg(debug_assertions)]
@@ -194,16 +198,19 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
             if path.exists() {
                 #[cfg(debug_assertions)]
                 println!("Found backend in exe dir: {:?}", path);
-                
+
                 if !ensure_executable(&path) {
                     #[cfg(debug_assertions)]
-                    eprintln!("Warning: Failed to set executable permissions for {:?}", path);
+                    eprintln!(
+                        "Warning: Failed to set executable permissions for {:?}",
+                        path
+                    );
                 }
-                
+
                 return Some(path);
             }
         }
-        
+
         // 2.1 macOS App Bundle 特殊处理：尝试在 ../Resources 查找
         #[cfg(target_os = "macos")]
         {
@@ -211,18 +218,21 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
             if resources_dir.exists() {
                 #[cfg(debug_assertions)]
                 println!("Searching in macOS Resources dir: {:?}", resources_dir);
-                
+
                 for name in &names {
                     let path = resources_dir.join(name);
                     if path.exists() {
                         #[cfg(debug_assertions)]
                         println!("Found backend in macOS Resources: {:?}", path);
-                        
+
                         if !ensure_executable(&path) {
                             #[cfg(debug_assertions)]
-                            eprintln!("Warning: Failed to set executable permissions for {:?}", path);
+                            eprintln!(
+                                "Warning: Failed to set executable permissions for {:?}",
+                                path
+                            );
                         }
-                        
+
                         return Some(path);
                     }
                 }
@@ -252,7 +262,10 @@ enum BackendError {
     HealthCheckTimeout,
 }
 
-fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Result<(Child, u16), BackendError> {
+fn start_backend(
+    app_handle: &AppHandle,
+    resource_dir: &Path,
+) -> Result<(Child, u16), BackendError> {
     let port = pick_available_port().ok_or(BackendError::NoPortAvailable)?;
 
     #[cfg(debug_assertions)]
@@ -442,11 +455,7 @@ fn main() {
                 Ok(dir) => dir,
                 Err(e) => {
                     let app_handle = app.handle().clone();
-                    show_error_dialog(
-                        &app_handle,
-                        "启动错误",
-                        &format!("无法获取资源目录: {}", e),
-                    );
+                    show_error_dialog(&app_handle, "启动错误", &format!("无法获取资源目录: {}", e));
                     return Err(e.into());
                 }
             };
@@ -510,11 +519,15 @@ fn main() {
                 Err(e) => {
                     let error_msg = match &e {
                         BackendError::NoPortAvailable => "没有可用的端口".to_string(),
-                        BackendError::BackendNotFound => format!("找不到后端可执行文件\n请检查资源目录: {:?}", resource_dir),
+                        BackendError::BackendNotFound => {
+                            format!("找不到后端可执行文件\n请检查资源目录: {:?}", resource_dir)
+                        }
                         BackendError::SpawnFailed(msg) => format!("启动后端失败: {}", msg),
-                        BackendError::HealthCheckTimeout => "后端健康检查超时，请检查后端是否正常工作".to_string(),
+                        BackendError::HealthCheckTimeout => {
+                            "后端健康检查超时，请检查后端是否正常工作".to_string()
+                        }
                     };
-                    
+
                     eprintln!("Failed to start backend: {:?}", error_msg);
                     show_error_dialog(&app_handle, "应用启动失败", &error_msg);
                     return Err("Backend startup failed".into());
