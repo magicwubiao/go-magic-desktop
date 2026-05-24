@@ -15,17 +15,17 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 // Window State Management
 // ============================================================================
 
-const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
-const DEFAULT_WINDOW_HEIGHT: f64 = 720.0;
-const MIN_WINDOW_WIDTH: f64 = 1000.0;
-const MIN_WINDOW_HEIGHT: f64 = 700.0;
+const DEFAULT_WINDOW_WIDTH: u32 = 1280;
+const DEFAULT_WINDOW_HEIGHT: u32 = 720;
+const MIN_WINDOW_WIDTH: u32 = 1000;
+const MIN_WINDOW_HEIGHT: u32 = 700;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 struct WindowState {
-    width: f64,
-    height: f64,
-    x: Option<f64>,
-    y: Option<f64>,
+    width: u32,
+    height: u32,
+    x: Option<i32>,
+    y: Option<i32>,
 }
 
 impl Default for WindowState {
@@ -48,42 +48,35 @@ fn get_window_state_path(app_handle: &AppHandle) -> Option<PathBuf> {
 }
 
 fn adjust_position_for_screen(
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
     app_handle: &AppHandle,
-) -> (f64, f64) {
+) -> (i32, i32) {
     if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
         let wa = monitor.work_area();
-        let screen_x = wa.position.x as f64;
-        let screen_y = wa.position.y as f64;
-        let screen_width = wa.size.width as f64;
-        let screen_height = wa.size.height as f64;
+        let screen_x = wa.position.x;
+        let screen_y = wa.position.y;
+        let screen_width = wa.size.width;
+        let screen_height = wa.size.height;
 
         let mut new_x = x;
         let mut new_y = y;
 
-        // 确保窗口完全在屏幕内
-        if new_x + width > screen_x + screen_width {
-            new_x = screen_x + screen_width - width;
+        if new_x + width as i32 > screen_x + screen_width as i32 {
+            new_x = screen_x + screen_width as i32 - width as i32;
         }
         if new_x < screen_x {
             new_x = screen_x;
         }
 
-        if new_y + height > screen_y + screen_height {
-            new_y = screen_y + screen_height - height;
+        if new_y + height as i32 > screen_y + screen_height as i32 {
+            new_y = screen_y + screen_height as i32 - height as i32;
         }
         if new_y < screen_y {
             new_y = screen_y;
         }
-
-        #[cfg(debug_assertions)]
-        println!(
-            "Position adjust: ({:.0}, {:.0}) -> ({:.0}, {:.0})",
-            x, y, new_x, new_y
-        );
 
         return (new_x, new_y);
     }
@@ -98,14 +91,13 @@ fn save_window_state(app_handle: &AppHandle) {
         return;
     };
 
-    // 保存 outer_size 和 outer_position（精确匹配窗口实际显示）
-    let (width, height) = match window.outer_size() {
-        Ok(size) => (size.width as f64, size.height as f64),
+    let (width, height) = match window.inner_size() {
+        Ok(size) => (size.width, size.height),
         Err(_) => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
     };
 
     let (x, y) = match window.outer_position() {
-        Ok(pos) => (Some(pos.x as f64), Some(pos.y as f64)),
+        Ok(pos) => (Some(pos.x), Some(pos.y)),
         Err(_) => (None, None),
     };
 
@@ -122,9 +114,6 @@ fn save_window_state(app_handle: &AppHandle) {
         }
         if let Err(e) = std::fs::write(&path, &json) {
             eprintln!("Failed to save window state: {}", e);
-        } else {
-            #[cfg(debug_assertions)]
-            println!("Saved window state: {:?}", state);
         }
     }
 }
@@ -139,15 +128,12 @@ fn load_window_state(app_handle: &AppHandle) -> WindowState {
     match std::fs::read_to_string(&path) {
         Ok(content) => match serde_json::from_str::<WindowState>(&content) {
             Ok(mut state) => {
-                // 限制窗口尺寸到合理范围
                 if state.width < MIN_WINDOW_WIDTH {
                     state.width = MIN_WINDOW_WIDTH;
                 }
                 if state.height < MIN_WINDOW_HEIGHT {
                     state.height = MIN_WINDOW_HEIGHT;
                 }
-                #[cfg(debug_assertions)]
-                println!("Loaded window state: {:?}", state);
                 state
             }
             Err(e) => {
@@ -576,16 +562,16 @@ fn main() {
                             // 基于屏幕尺寸居中
                             if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
                                 let wa = monitor.work_area();
-                                let screen_width = wa.size.width as f64;
-                                let screen_height = wa.size.height as f64;
-                                let screen_x = wa.position.x as f64;
-                                let screen_y = wa.position.y as f64;
+                                let screen_width = wa.size.width;
+                                let screen_height = wa.size.height;
+                                let screen_x = wa.position.x;
+                                let screen_y = wa.position.y;
                                 (
-                                    screen_x + (screen_width - window_state.width) / 2.0,
-                                    screen_y + (screen_height - window_state.height) / 2.0,
+                                    screen_x + (screen_width - window_state.width as i32) / 2,
+                                    screen_y + (screen_height - window_state.height as i32) / 2,
                                 )
                             } else {
-                                (0.0, 0.0)
+                                (0, 0)
                             }
                         }
                     };
@@ -628,17 +614,6 @@ fn main() {
 
                     #[cfg(debug_assertions)]
                     println!("Application ready");
-
-                    // 验证窗口创建后的实际尺寸
-                    if let Ok(actual_size) = window.inner_size() {
-                        #[cfg(debug_assertions)]
-                        {
-                            println!(
-                                "Window size verification - Expected: {:.0}x{:.0}, Actual: {}x{}",
-                                window_state.width, window_state.height, actual_size.width, actual_size.height
-                            );
-                        }
-                    }
                 }
                 Err(e) => {
                     let error_msg = match &e {
