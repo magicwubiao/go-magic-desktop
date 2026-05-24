@@ -10,7 +10,6 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
-use tauri_plugin_dialog::{Dialog, MessageDialogButtons, MessageDialogKind};
 
 // ============================================================================
 // Constants Configuration
@@ -97,12 +96,8 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
 // Process Control
 // --------------------------------------------------------------------------
 
-fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
-    let _ = Dialog::message(message)
-        .title(title)
-        .kind(MessageDialogKind::Error)
-        .buttons(MessageDialogButtons::Ok)
-        .blocking_show(app_handle);
+fn show_error_dialog(_app_handle: &AppHandle, title: &str, message: &str) {
+    eprintln!("{}: {}", title, message);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -111,7 +106,7 @@ fn ensure_executable(path: &Path) -> bool {
 
     if let Ok(metadata) = std::fs::metadata(path) {
         let mut perms = metadata.permissions();
-        if !perms.mode() & 0o111 != 0 {
+        if (perms.mode() & 0o111) != 0o111 {
             perms.set_mode(perms.mode() | 0o755);
             if std::fs::set_permissions(path, perms).is_ok() {
                 #[cfg(debug_assertions)]
@@ -170,7 +165,6 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
             #[cfg(debug_assertions)]
             println!("Found backend at: {:?}", path);
 
-            // Ensure executable permissions
             if !ensure_executable(&path) {
                 #[cfg(debug_assertions)]
                 eprintln!(
@@ -184,56 +178,55 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     }
 
     // 2. 如果在资源目录没找到，尝试在可执行文件同级目录查找（某些打包方式）
-    if let Ok(exe_dir) = std::env::current_exe().and_then(|p| {
-        p.parent()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "No parent dir"))
-    }) {
-        #[cfg(debug_assertions)]
-        println!("Searching in exe dir: {:?}", exe_dir);
-
-        for name in &names {
-            let path = exe_dir.join(name);
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
             #[cfg(debug_assertions)]
-            println!("Checking in exe dir: {:?}", path);
-            if path.exists() {
-                #[cfg(debug_assertions)]
-                println!("Found backend in exe dir: {:?}", path);
+            println!("Searching in exe dir: {:?}", exe_dir);
 
-                if !ensure_executable(&path) {
+            for name in &names {
+                let path = exe_dir.join(name);
+                #[cfg(debug_assertions)]
+                println!("Checking in exe dir: {:?}", path);
+                if path.exists() {
                     #[cfg(debug_assertions)]
-                    eprintln!(
-                        "Warning: Failed to set executable permissions for {:?}",
-                        path
-                    );
-                }
+                    println!("Found backend in exe dir: {:?}", path);
 
-                return Some(path);
-            }
-        }
-
-        // 2.1 macOS App Bundle 特殊处理：尝试在 ../Resources 查找
-        #[cfg(target_os = "macos")]
-        {
-            let resources_dir = exe_dir.join("../Resources");
-            if resources_dir.exists() {
-                #[cfg(debug_assertions)]
-                println!("Searching in macOS Resources dir: {:?}", resources_dir);
-
-                for name in &names {
-                    let path = resources_dir.join(name);
-                    if path.exists() {
+                    if !ensure_executable(&path) {
                         #[cfg(debug_assertions)]
-                        println!("Found backend in macOS Resources: {:?}", path);
+                        eprintln!(
+                            "Warning: Failed to set executable permissions for {:?}",
+                            path
+                        );
+                    }
 
-                        if !ensure_executable(&path) {
+                    return Some(path);
+                }
+            }
+
+            // 2.1 macOS App Bundle 特殊处理：尝试在 ../Resources 查找
+            #[cfg(target_os = "macos")]
+            {
+                let resources_dir = exe_dir.join("../Resources");
+                if resources_dir.exists() {
+                    #[cfg(debug_assertions)]
+                    println!("Searching in macOS Resources dir: {:?}", resources_dir);
+
+                    for name in &names {
+                        let path = resources_dir.join(name);
+                        if path.exists() {
                             #[cfg(debug_assertions)]
-                            eprintln!(
-                                "Warning: Failed to set executable permissions for {:?}",
-                                path
-                            );
-                        }
+                            println!("Found backend in macOS Resources: {:?}", path);
 
-                        return Some(path);
+                            if !ensure_executable(&path) {
+                                #[cfg(debug_assertions)]
+                                eprintln!(
+                                    "Warning: Failed to set executable permissions for {:?}",
+                                    path
+                                );
+                            }
+
+                            return Some(path);
+                        }
                     }
                 }
             }
