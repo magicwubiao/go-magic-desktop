@@ -1,6 +1,6 @@
-﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Go Magic Desktop - 杩涚▼鍒嗙妯″紡
+//! Go Magic Desktop - 进程分离模式
 
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder};
 
 // ============================================================================
-// 甯搁噺閰嶇疆
+// 常量配置
 // ============================================================================
 
 const DEFAULT_PORTS: &[u16] = &[5000, 5001, 5002, 5003, 5004, 8080, 3000];
@@ -20,7 +20,7 @@ const HEALTH_CHECK_TIMEOUT_SECS: u64 = 60;
 const HEALTH_CHECK_INTERVAL_MS: u64 = 500;
 
 // ============================================================================
-// 鍚庣杩涚▼绠＄悊
+// 后端进程管理
 // ============================================================================
 
 struct BackendState {
@@ -32,7 +32,7 @@ struct BackendState {
 static BACKEND_STATE: Mutex<Option<BackendState>> = Mutex::new(None);
 
 // --------------------------------------------------------------------------
-// 绔彛绠＄悊
+// 端口管理
 // --------------------------------------------------------------------------
 
 fn is_port_available(port: u16) -> bool {
@@ -45,12 +45,12 @@ fn pick_available_port() -> Option<u16> {
             return Some(port);
         }
     }
-    // 鍏滃簳锛氬皾璇?8000-9000 鑼冨洿
     (8000..9000).find(|&port| is_port_available(port))
 }
 
 // --------------------------------------------------------------------------
-// 鍋ュ悍妫€鏌?// --------------------------------------------------------------------------
+// 健康检查
+// --------------------------------------------------------------------------
 
 fn check_backend_health(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/health", port);
@@ -66,6 +66,8 @@ fn check_backend_health(port: u16) -> bool {
 
 fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
     let start = Instant::now();
+
+    #[cfg(debug_assertions)]
     println!("Waiting for backend on port {}...", port);
 
     while start.elapsed().as_secs() < HEALTH_CHECK_TIMEOUT_SECS {
@@ -79,6 +81,7 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
         );
 
         if check_backend_health(port) {
+            #[cfg(debug_assertions)]
             println!("Backend ready after {}ms", start.elapsed().as_millis());
             return true;
         }
@@ -90,7 +93,7 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
 }
 
 // --------------------------------------------------------------------------
-// 杩涚▼鎺у埗
+// 进程控制
 // --------------------------------------------------------------------------
 
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
@@ -103,6 +106,7 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     for name in &names {
         let path = resource_dir.join(name);
         if path.exists() {
+            #[cfg(debug_assertions)]
             println!("Found backend at: {:?}", path);
             return Some(path);
         }
@@ -114,6 +118,7 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     let binary = "go-magic";
 
     if Command::new(binary).arg("--version").output().is_ok() {
+        #[cfg(debug_assertions)]
         println!("Using backend from PATH: {}", binary);
         return Some(PathBuf::from(binary));
     }
@@ -123,6 +128,8 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
 
 fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, u16)> {
     let port = pick_available_port()?;
+
+    #[cfg(debug_assertions)]
     println!("Selected port: {}", port);
 
     let backend_path = find_backend_path(resource_dir)?;
@@ -156,9 +163,10 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
             .ok()?
     };
 
+    #[cfg(debug_assertions)]
     println!("Backend process spawned, PID: {:?}", child.id());
 
-    // 鍦ㄥ悗鍙扮嚎绋嬩腑璇诲彇杈撳嚭
+    // 后端输出读取线程
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     thread::spawn(move || {
@@ -169,6 +177,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
                     break;
                 }
                 if let Ok(line) = line {
+                    #[cfg(debug_assertions)]
                     println!("[backend] {}", line);
                 }
             }
@@ -181,6 +190,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
                 }
                 if let Ok(line) = line {
                     if !line.is_empty() {
+                        #[cfg(debug_assertions)]
                         eprintln!("[backend:err] {}", line);
                     }
                 }
@@ -189,6 +199,7 @@ fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Option<(Child, 
     });
 
     if wait_for_backend_ready(port, app_handle) {
+        #[cfg(debug_assertions)]
         println!("Backend started successfully");
         Some((child, port))
     } else {
@@ -202,10 +213,15 @@ fn stop_backend() {
     if let Ok(mut guard) = BACKEND_STATE.lock() {
         if let Some(mut state) = guard.take() {
             let runtime = state.start_time.elapsed().as_secs_f64();
+
+            #[cfg(debug_assertions)]
             println!("Stopping backend (ran for {:.1}s)...", runtime);
 
             match state.process.kill() {
-                Ok(_) => println!("Backend stopped"),
+                Ok(_) => {
+                    #[cfg(debug_assertions)]
+                    println!("Backend stopped");
+                }
                 Err(e) => eprintln!("Failed to stop backend: {}", e),
             }
         }
@@ -213,6 +229,7 @@ fn stop_backend() {
 }
 
 fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
+    #[cfg(debug_assertions)]
     println!("Restarting backend...");
     stop_backend();
     thread::sleep(Duration::from_secs(1));
@@ -230,7 +247,7 @@ fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
 }
 
 // ============================================================================
-// Tauri 鍛戒护
+// Tauri 命令
 // ============================================================================
 
 #[tauri::command]
@@ -271,14 +288,10 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 }
 
 // ============================================================================
-// 涓荤▼搴?// ============================================================================
+// 主程序
+// ============================================================================
 
 fn main() {
-    println!("===========================================");
-    println!("Go Magic Desktop v{}", env!("CARGO_PKG_VERSION"));
-    println!("Mode: Process-Isolated");
-    println!("===========================================");
-
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
@@ -294,6 +307,7 @@ fn main() {
                 .expect("Failed to get resource directory");
             let app_handle = app.handle().clone();
 
+            #[cfg(debug_assertions)]
             println!("Resource directory: {:?}", resource_dir);
 
             match start_backend(&app_handle, &resource_dir) {
@@ -308,6 +322,8 @@ fn main() {
                     }
 
                     let server_url = format!("http://127.0.0.1:{}/", port);
+
+                    #[cfg(debug_assertions)]
                     println!("Creating window, URL: {}", server_url);
 
                     thread::sleep(Duration::from_millis(300));
@@ -327,10 +343,7 @@ fn main() {
                     .build()
                     .expect("Failed to create window");
 
-                                        window.listen("tauri://navigation", move |event| { println!("Navigating to: {}", event.payload()); });
-
-                    window.listen("tauri://page-load", move |event| { println!("Page loaded: {}", event.payload()); });
-
+                    // 调试模式下打开 DevTools
                     #[cfg(debug_assertions)]
                     {
                         window.open_devtools();
@@ -346,6 +359,7 @@ fn main() {
                         }),
                     );
 
+                    #[cfg(debug_assertions)]
                     println!("Application ready");
                 }
                 None => {
@@ -364,7 +378,6 @@ fn main() {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                println!("Close requested");
                 stop_backend();
                 window.app_handle().exit(0);
             }
@@ -372,7 +385,3 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Failed to run Tauri application");
 }
-
-
-
-
