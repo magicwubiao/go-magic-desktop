@@ -15,10 +15,10 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 // Window State Management
 // ============================================================================
 
-const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
-const DEFAULT_WINDOW_HEIGHT: f64 = 720.0;
-const MIN_WINDOW_WIDTH: f64 = 1000.0;
-const MIN_WINDOW_HEIGHT: f64 = 700.0;
+const DEFAULT_WINDOW_WIDTH: f64 = 1024.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 768.0;
+const MIN_WINDOW_WIDTH: f64 = 800.0;
+const MIN_WINDOW_HEIGHT: f64 = 600.0;
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 struct WindowState {
