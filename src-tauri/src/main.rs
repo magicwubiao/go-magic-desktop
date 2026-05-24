@@ -201,75 +201,21 @@ fn ensure_executable(path: &Path) -> bool {
 
 #[cfg(target_os = "windows")]
 fn ensure_executable(_path: &Path) -> bool {
-    true // Windows doesn't use executable bits like Unix
+    true
 }
 
-fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
-    #[cfg(debug_assertions)]
-    println!("Searching for backend in resource dir: {:?}", resource_dir);
-
-    // 列出资源目录的内容，帮助调试
-    #[cfg(debug_assertions)]
-    {
-        if let Ok(entries) = std::fs::read_dir(resource_dir) {
-            println!("Resource dir contents:");
-            for entry in entries.flatten() {
-                println!("  - {:?}", entry.path());
-            }
-        }
-    }
-
+fn find_backend_path(_resource_dir: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
-    let names = vec![
-        "go-magic.exe",
-        "resources/go-magic.exe",
-        "bin/go-magic.exe",
-        "backends/go-magic.exe",
-    ];
+    let binary_names = vec!["go-magic.exe", "go-magic"];
 
     #[cfg(not(target_os = "windows"))]
-    let names = vec![
-        "go-magic",
-        "resources/go-magic",
-        "bin/go-magic",
-        "backends/go-magic",
-    ];
+    let binary_names = vec!["go-magic"];
 
-    // 1. 先在资源目录中查找（Tauri 标准打包位置）
-    for name in &names {
-        let path = resource_dir.join(name);
-        #[cfg(debug_assertions)]
-        println!("Checking in resource dir: {:?}", path);
-        if path.exists() {
-            #[cfg(debug_assertions)]
-            println!("Found backend at: {:?}", path);
-
-            if !ensure_executable(&path) {
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "Warning: Failed to set executable permissions for {:?}",
-                    path
-                );
-            }
-
-            return Some(path);
-        }
-    }
-
-    // 2. 如果在资源目录没找到，尝试在可执行文件同级目录查找（某些打包方式）
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            #[cfg(debug_assertions)]
-            println!("Searching in exe dir: {:?}", exe_dir);
-
-            for name in &names {
+            for name in &binary_names {
                 let path = exe_dir.join(name);
-                #[cfg(debug_assertions)]
-                println!("Checking in exe dir: {:?}", path);
                 if path.exists() {
-                    #[cfg(debug_assertions)]
-                    println!("Found backend in exe dir: {:?}", path);
-
                     if !ensure_executable(&path) {
                         #[cfg(debug_assertions)]
                         eprintln!(
@@ -277,25 +223,17 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
                             path
                         );
                     }
-
                     return Some(path);
                 }
             }
 
-            // 2.1 macOS App Bundle 特殊处理：尝试在 ../Resources 查找
             #[cfg(target_os = "macos")]
             {
                 let resources_dir = exe_dir.join("../Resources");
                 if resources_dir.exists() {
-                    #[cfg(debug_assertions)]
-                    println!("Searching in macOS Resources dir: {:?}", resources_dir);
-
-                    for name in &names {
+                    for name in &binary_names {
                         let path = resources_dir.join(name);
                         if path.exists() {
-                            #[cfg(debug_assertions)]
-                            println!("Found backend in macOS Resources: {:?}", path);
-
                             if !ensure_executable(&path) {
                                 #[cfg(debug_assertions)]
                                 eprintln!(
@@ -303,7 +241,6 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
                                     path
                                 );
                             }
-
                             return Some(path);
                         }
                     }
@@ -312,16 +249,13 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
         }
     }
 
-    // 3. 最后尝试 PATH
     #[cfg(target_os = "windows")]
-    let binary = "go-magic.exe";
+    let path_binary = "go-magic.exe";
     #[cfg(not(target_os = "windows"))]
-    let binary = "go-magic";
+    let path_binary = "go-magic";
 
-    if Command::new(binary).arg("--version").output().is_ok() {
-        #[cfg(debug_assertions)]
-        println!("Using backend from PATH: {}", binary);
-        return Some(PathBuf::from(binary));
+    if Command::new(path_binary).arg("--version").output().is_ok() {
+        return Some(PathBuf::from(path_binary));
     }
 
     None
@@ -334,10 +268,7 @@ enum BackendError {
     HealthCheckTimeout,
 }
 
-fn start_backend(
-    app_handle: &AppHandle,
-    resource_dir: &Path,
-) -> Result<(Child, u16), BackendError> {
+fn start_backend(app_handle: &AppHandle, resource_dir: &Path) -> Result<(Child, u16), BackendError> {
     let port = pick_available_port().ok_or(BackendError::NoPortAvailable)?;
 
     #[cfg(debug_assertions)]
@@ -377,7 +308,6 @@ fn start_backend(
     #[cfg(debug_assertions)]
     println!("Backend process spawned, PID: {:?}", child.id());
 
-    // Backend output capture thread
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     thread::spawn(move || {
@@ -527,7 +457,11 @@ fn main() {
                 Ok(dir) => dir,
                 Err(e) => {
                     let app_handle = app.handle().clone();
-                    show_error_dialog(&app_handle, "启动错误", &format!("无法获取资源目录: {}", e));
+                    show_error_dialog(
+                        &app_handle,
+                        "启动错误",
+                        &format!("无法获取资源目录: {}", e),
+                    );
                     return Err(e.into());
                 }
             };
@@ -574,9 +508,10 @@ fn main() {
                         window_builder = window_builder.center();
                     }
 
-                    let window = window_builder.build().expect("Failed to create window");
+                    let window = window_builder
+                        .build()
+                        .expect("Failed to create window");
 
-                    // Open DevTools in debug mode
                     #[cfg(debug_assertions)]
                     {
                         window.open_devtools();
@@ -599,7 +534,10 @@ fn main() {
                     let error_msg = match &e {
                         BackendError::NoPortAvailable => "没有可用的端口".to_string(),
                         BackendError::BackendNotFound => {
-                            format!("找不到后端可执行文件\n请检查资源目录: {:?}", resource_dir)
+                            format!(
+                                "找不到后端可执行文件\n请检查资源目录: {:?}",
+                                resource_dir
+                            )
                         }
                         BackendError::SpawnFailed(msg) => format!("启动后端失败: {}", msg),
                         BackendError::HealthCheckTimeout => {
