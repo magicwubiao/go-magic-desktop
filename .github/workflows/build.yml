@@ -345,7 +345,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: go-magic/go-magic-*
+          path: go-magic/go-magic-${{ matrix.goos }}-${{ matrix.goarch }}*
           retention-days: 30
 
   create-release:
@@ -461,99 +461,5 @@ jobs:
 
             ### 📝 Changes
             See the full changelog in the release notes below.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  package-source:
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout desktop repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Checkout go-magic submodule
-        uses: actions/checkout@v4
-        with:
-          repository: magicwubiao/go-magic
-          path: go-magic
-
-      - name: Get version info
-        id: version_info
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-          else
-            VERSION="v1.0.0"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Packaging source for version: $VERSION"
-
-      - name: Package source code
-        run: |
-          VERSION="${{ steps.version_info.outputs.version }}"
-          PKG_NAME="go-magic-desktop-${VERSION}-source"
-          
-          # Create source package directory
-          mkdir -p "${PKG_NAME}"
-          
-          # Copy desktop repo files (excluding .git and go-magic)
-          rsync -av --exclude='.git' --exclude='go-magic' --exclude='target' --exclude='node_modules' --exclude='src-tauri/target' ./ "${PKG_NAME}/go-magic-desktop/"
-          
-          # Copy go-magic repo
-          rsync -av --exclude='.git' --exclude='target' --exclude='node_modules' ./go-magic/ "${PKG_NAME}/go-magic/"
-          
-          # Create tar.gz archive
-          tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
-          
-          # Create zip archive
-          zip -r "${PKG_NAME}.zip" "${PKG_NAME}"
-          
-          # Generate checksums
-          sha256sum "${PKG_NAME}.tar.gz" "${PKG_NAME}.zip" > "${PKG_NAME}-checksums.txt"
-          
-          echo "=== Source packages created ==="
-          ls -lh "${PKG_NAME}".*
-          cat "${PKG_NAME}-checksums.txt"
-
-      - name: Upload source packages to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version_info.outputs.version }}
-          files: |
-            go-magic-desktop-*-source.tar.gz
-            go-magic-desktop-*-source.zip
-            go-magic-desktop-*-source-checksums.txt
-          body: |
-            ### 📦 Source Code
-            
-            Complete source code packages including both `go-magic-desktop` and `go-magic` repositories:
-            
-            | Format | File | Description |
-            |--------|------|-------------|
-            | Tarball | `go-magic-desktop-*-source.tar.gz` | Unix/Linux source archive |
-            | ZIP | `go-magic-desktop-*-source.zip` | Windows/macOS source archive |
-            
-            ### ✅ Verify Source Package
-            ```bash
-            sha256sum -c go-magic-desktop-*-source-checksums.txt
-            ```
-            
-            ### 📁 Package Contents
-            ```
-            go-magic-desktop-{version}-source/
-            ├── go-magic-desktop/     # Desktop application source
-            │   ├── src-tauri/        # Rust/Tauri backend
-            │   ├── web-dist/         # Web frontend
-            │   └── ...
-            └── go-magic/             # Backend service source
-                ├── cmd/              # Go commands
-                ├── internal/         # Internal packages
-                └── ...
-            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
