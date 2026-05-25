@@ -615,7 +615,7 @@ jobs:
             ├── go-magic-desktop/     # Desktop application source
             │   ├── src-tauri/        # Rust/Tauri backend
             │   ├── web-dist/         # Web frontend
-│   └── ...
+            │   └── ...
             └── go-magic/             # Backend service source
                 ├── cmd/              # Go commands
                 ├── internal/         # Internal packages
