@@ -1,60 +1,62 @@
 # Go Magic Desktop (Tauri)
 
-Tauri 桌面端应用，将 Go Magic 打包为跨平台桌面应用。
+[English](README.md) | [中文](README.zh-CN.md)
 
-## 架构说明
+Tauri desktop application that packages Go Magic as a cross-platform desktop app.
+
+## Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │                    Tauri Desktop App                        │
 │                                                            │
 │  ┌────────────────┐     ┌─────────────────────────────┐   │
-│  │   WebView      │     │    go-magic 后端进程        │   │
-│  │   (UI)         │◀───▶│    - HTTP 服务 (port)      │   │
-│  │                │     │    - API 处理              │   │
-│  │   localhost    │     │    - 独立运行              │   │
+│  │   WebView      │     │    go-magic Backend         │   │
+│  │   (UI)         │◀───▶│    - HTTP Server (port)    │   │
+│  │                │     │    - API Handler           │   │
+│  │   localhost    │     │    - Standalone Process    │   │
 │  └────────────────┘     └─────────────────────────────┘   │
 │                                                            │
-│  特点：                                                    │
-│  ✓ CLI 和桌面版共用同一后端                                 │
-│  ✓ 无需修改 go-magic 源码                                   │
-│  ✓ 版本升级只需替换二进制                                   │
+│  Features:                                                 │
+│  ✓ Shared backend between CLI and desktop                  │
+│  ✓ No modifications to go-magic source code                │
+│  ✓ Easy version upgrades by replacing binary               │
 └────────────────────────────────────────────────────────────┘
 ```
 
-**为什么选择进程分离？**
-- go-magic 是独立 Go 程序，非库
-- CLI 和桌面版完全共享后端
-- 维护简单，版本同步容易
+**Why Process Separation?**
+- go-magic is a standalone Go program, not a library
+- CLI and desktop versions share the same backend completely
+- Easy maintenance and version synchronization
 
-## 功能特性
+## Features
 
-- **跨平台支持**: Windows、macOS、Linux
-- **嵌入式后端**: Go Magic 后端自动启动和管理
-- **自动端口选择**: 智能选择可用端口，避免冲突
-- **健康检查**: 60秒超时检测后端就绪状态
-- **日志系统**: 结构化日志便于问题排查
-- **安全策略**: CSP 防护、权限控制
+- **Cross-Platform**: Windows, macOS, Linux
+- **Embedded Backend**: Go Magic backend auto-starts and manages
+- **Auto Port Selection**: Smart port selection to avoid conflicts
+- **Health Check**: 60-second timeout for backend readiness detection
+- **Logging System**: Structured logging for troubleshooting
+- **Security Policy**: CSP protection, permission control
 
-## 项目结构
+## Project Structure
 
 ```
 go-magic-desktop/
-├── src-tauri/          # Rust 后端代码
+├── src-tauri/          # Rust backend code
 │   ├── src/
-│   │   └── main.rs     # 主程序入口
-│   ├── Cargo.toml      # Rust 依赖
-│   ├── tauri.conf.json # Tauri 配置
-│   └── resources/      # 打包资源
-├── icons/              # 应用图标
-├── build-all.sh        # 多平台构建脚本
-├── build-windows.ps1   # Windows 构建脚本
-└── package.json        # Node.js 配置
+│   │   └── main.rs     # Main entry point
+│   ├── Cargo.toml      # Rust dependencies
+│   ├── tauri.conf.json # Tauri configuration
+│   └── resources/      # Packaging resources
+├── icons/              # Application icons
+├── build-all.sh        # Multi-platform build script
+├── build-windows.ps1   # Windows build script
+└── package.json        # Node.js configuration
 ```
 
-## 前置要求
+## Prerequisites
 
-### 必需软件
+### Required Software
 
 1. **Rust** (1.75+)
    ```bash
@@ -68,12 +70,12 @@ go-magic-desktop/
    npm install -g @tauri-apps/cli
    ```
 
-4. **Go** (1.21+) - 用于构建后端
+4. **Go** (1.21+) - For building backend
    ```bash
    go install golang.org/dl/go1.21@latest
    ```
 
-### 系统依赖
+### System Dependencies
 
 - **Windows**: Microsoft Visual Studio C++ Build Tools, WebView2 Runtime
 - **macOS**: Xcode Command Line Tools
@@ -82,57 +84,57 @@ go-magic-desktop/
   sudo apt install libwebkit2gtk-4.1-dev libssl3 libgtk-3-dev
   ```
 
-## 开发
+## Development
 
 ```bash
-# 进入项目目录
+# Enter project directory
 cd go-magic-desktop
 
-# 安装依赖
+# Install dependencies
 npm install
 
-# 克隆 Go Magic 主仓库（在同一父目录）
+# Clone Go Magic main repository (in the same parent directory)
 cd ../ && git clone https://github.com/magicwubiao/go-magic.git
 
-# 返回桌面应用目录
+# Return to desktop app directory
 cd go-magic-desktop
 
-# 构建 Go Magic 后端
+# Build Go Magic backend
 cd ../go-magic && go build -o ../go-magic-desktop/src-tauri/resources/go-magic ./cmd/magic
 
-# 开发模式
+# Development mode
 npm run dev
 ```
 
-## 构建
+## Building
 
-### 快速构建
+### Quick Build
 
 ```bash
-# 构建前端并打包桌面应用
+# Build frontend and package desktop app
 npm run build
 
-# 或使用构建脚本
+# Or use build script
 ./build-all.sh
 ```
 
-### 分步构建
+### Step-by-Step Build
 
 ```bash
-# 1. 构建前端
+# 1. Build frontend
 cd ../go-magic/web && npm run build
 
-# 2. 构建后端
+# 2. Build backend
 cd ../go-magic && go build -o ../go-magic-desktop/src-tauri/resources/go-magic ./cmd/magic
 
-# 3. 打包桌面应用
+# 3. Package desktop app
 cd ../go-magic-desktop && tauri build
 ```
 
-### 多平台构建
+### Multi-Platform Build
 
 ```bash
-# 所有平台
+# All platforms
 ./build-all.sh all
 
 # Windows
@@ -148,52 +150,52 @@ cd ../go-magic-desktop && tauri build
 ./build-all.sh linux
 ```
 
-## 打包输出
+## Build Output
 
-构建完成后，安装包位于：
+After building, installers are located at:
 
-| 平台 | 位置 |
-|------|------|
+| Platform | Location |
+|----------|----------|
 | Windows NSIS | `src-tauri/target/release/bundle/nsis/*.exe` |
 | Windows MSI | `src-tauri/target/release/bundle/msi/*.msi` |
 | macOS | `src-tauri/target/release/bundle/dmg/*.dmg` |
 | Linux AppImage | `src-tauri/target/release/bundle/appimage/*.AppImage` |
 | Linux DEB | `src-tauri/target/release/bundle/deb/*.deb` |
 
-## 与 Go Magic 集成
+## Go Magic Integration
 
-Tauri 应用自动完成以下工作：
+The Tauri app automatically handles:
 
-1. **检测后端**: 在 resources 目录查找 go-magic 可执行文件
-2. **启动后端**: 自动启动 `go-magic server --port <PORT>`
-3. **健康检查**: 等待后端就绪（60秒超时）
-4. **加载界面**: WebView 加载 `http://127.0.0.1:<PORT>/`
-5. **窗口管理**: 显示主窗口并聚焦
-6. **优雅关闭**: 窗口关闭时终止后端进程
+1. **Backend Detection**: Find go-magic executable in resources directory
+2. **Backend Startup**: Auto-start `go-magic server --port <PORT>`
+3. **Health Check**: Wait for backend readiness (60s timeout)
+4. **UI Loading**: WebView loads `http://127.0.0.1:<PORT>/`
+5. **Window Management**: Show main window and focus
+6. **Graceful Shutdown**: Terminate backend process on window close
 
-### 端口优先级
+### Port Priority
 
-自动选择可用端口：5000 → 5001 → 5002 → 5003 → 5004 → 8080 → 3000
+Auto-select available port: 5000 → 5001 → 5002 → 5003 → 5004 → 8080 → 3000
 
-## 配置
+## Configuration
 
-### Tauri 配置
+### Tauri Configuration
 
-修改 `tauri.conf.json` 调整：
-- 窗口大小和标题
-- 权限设置
-- 打包选项
+Modify `tauri.conf.json` to adjust:
+- Window size and title
+- Permission settings
+- Packaging options
 
-### 环境变量
+### Environment Variables
 
-| 变量 | 说明 |
-|------|------|
-| `GOMAGIC_PORT` | 后端监听端口 |
-| `RUST_BACKTRACE` | Rust 堆栈跟踪级别 |
+| Variable | Description |
+|----------|-------------|
+| `GOMAGIC_PORT` | Backend listening port |
+| `RUST_BACKTRACE` | Rust stack trace level |
 
-## 架构说明
+## Architecture
 
-### 进程管理
+### Process Management
 
 ```
 ┌─────────────────────────────────────┐
@@ -207,63 +209,63 @@ Tauri 应用自动完成以下工作：
 │                │                    │
 │  ┌─────────────▼───────────────┐   │
 │  │   go-magic Backend Process  │   │
-│  │   (独立子进程)              │   │
+│  │   (Standalone Subprocess)   │   │
 │  └─────────────┬───────────────┘   │
 │                │                    │
 │  ┌─────────────▼───────────────┐   │
-│  │   WebView (用户界面)        │   │
+│  │   WebView (User Interface)  │   │
 │  └─────────────────────────────┘   │
 └─────────────────────────────────────┘
 ```
 
-### 安全策略
+### Security Policy
 
-- **CSP**: 限制脚本来源和连接目标
-- **端口绑定**: 仅允许 localhost 访问
-- **权限控制**: 仅允许必要的系统操作
+- **CSP**: Restrict script sources and connection targets
+- **Port Binding**: Only allow localhost access
+- **Permission Control**: Only allow necessary system operations
 
-## 日志
+## Logs
 
-日志位置：
+Log locations:
 - **Windows**: `%APPDATA%/go-magic-desktop/logs/`
 - **macOS**: `~/Library/Logs/go-magic-desktop/`
 - **Linux**: `~/.local/share/go-magic-desktop/logs/`
 
-日志文件：
-- `go-magic.log`: 应用主日志
-- `go-magic.log.0`: 轮转日志
+Log files:
+- `go-magic.log`: Application main log
+- `go-magic.log.0`: Rotated log
 
-## 常见问题
+## FAQ
 
-### WebView2 缺失 (Windows)
+### WebView2 Missing (Windows)
 
 ```powershell
 winget install Microsoft.WebView2
 ```
 
-### 后端启动失败
+### Backend Startup Failure
 
-1. 检查 `src-tauri/resources/go-magic.exe` 是否存在
-2. 查看日志文件中的错误信息
-3. 验证端口是否被占用
+1. Check if `src-tauri/resources/go-magic.exe` exists
+2. Review error messages in log files
+3. Verify if port is occupied
 
-### macOS 安全提示
+### macOS Security Warning
 
-系统偏好设置 → 安全性与隐私 → 允许运行
+System Preferences → Security & Privacy → Allow anyway
 
-## 持续集成
+## CI/CD
 
-使用 GitHub Actions 自动构建：
+Using GitHub Actions for automated builds:
 
-- **lint**: 代码质量检查
-- **build-desktop**: 多平台桌面应用构建
-- **build-go-cli**: Go CLI 多平台构建
-- **create-release**: 自动化发布
+- **lint**: Code quality check
+- **build-desktop**: Multi-platform desktop app build
+- **build-go-cli**: Go CLI multi-platform build
+- **create-release**: Automated release
 
-## 许可证
+## License
 
 MIT License
 
-## 贡献
+## Contributing
 
-欢迎提交 Issue 和 Pull Request！
+Issues and Pull Requests are welcome!

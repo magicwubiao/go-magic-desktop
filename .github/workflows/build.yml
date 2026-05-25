@@ -10,10 +10,16 @@ on:
         type: boolean
   push:
     branches: [main, master]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main, master]
   release:
     types: [published, created]
+
+permissions:
+  contents: write
+  actions: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -350,45 +356,270 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
+          merge-multiple: false
 
       - name: List artifacts
         run: |
-          echo "=== Artifacts ==="
-          ls -la artifacts/
+          echo "=== All artifacts ==="
+          find artifacts -type f -ls
+
+      - name: Organize artifacts for release
+        run: |
+          mkdir -p release-assets
+
+          # Copy desktop app artifacts
+          for artifact in artifacts/go-magic-desktop-*; do
+            if [ -d "$artifact" ]; then
+              echo "Processing $artifact"
+              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
+            fi
+          done
+
+          # Copy CLI artifacts
+          for artifact in artifacts/go-magic-linux-* artifacts/go-magic-darwin-* artifacts/go-magic-windows-*; do
+            if [ -d "$artifact" ]; then
+              echo "Processing $artifact"
+              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
+            fi
+          done
+
+          echo "=== Release assets ==="
+          ls -la release-assets/
 
       - name: Generate checksums
         run: |
-          cd artifacts
-          sha256sum * > checksums.txt
-          cat checksums.txt
+          cd release-assets
+          if [ "$(ls -A)" ]; then
+            sha256sum * > checksums.txt
+            cat checksums.txt
+          else
+            echo "No files to checksum"
+            touch checksums.txt
+          fi
 
-      - name: Create Release
+      - name: Get version info
+        id: version_info
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+            echo "tag=$VERSION" >> $GITHUB_OUTPUT
+            echo "name=Release $VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "tag=v1.0.0" >> $GITHUB_OUTPUT
+            echo "name=Release v1.0.0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or Update Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          tag_name: ${{ steps.version_info.outputs.tag }}
+          name: ${{ steps.version_info.outputs.name }}
+          files: release-assets/*
           generate_release_notes: true
           body: |
-            ## Download Instructions
+            ## 🚀 Go Magic Desktop Release
 
-            ### Desktop Applications
+            ### 📥 Desktop Applications
             Download the appropriate installer for your platform:
-            - **Windows**: `.exe` (NSIS installer) or `.msi`
-            - **macOS**: `.dmg`
-            - **Linux**: `.AppImage`, `.deb`
 
-            ### CLI Tools
+            | Platform | File | Description |
+            |----------|------|-------------|
+            | **Windows** | `go-magic-desktop_*.exe` | NSIS Installer |
+            | **Windows** | `go-magic-desktop_*.msi` | MSI Installer |
+            | **macOS Intel** | `go-magic-desktop_*.dmg` | DMG for x64 |
+            | **macOS Apple Silicon** | `go-magic-desktop_*.dmg` | DMG for ARM64 |
+            | **Linux** | `go-magic-desktop_*.AppImage` | AppImage (portable) |
+            | **Linux** | `go-magic-desktop_*.deb` | Debian package |
+
+            ### 🖥️ CLI Tools
             Download the CLI binary for your platform:
-            - `go-magic-linux-amd64`
-            - `go-magic-darwin-amd64`
-            - `go-magic-darwin-arm64`
-            - `go-magic-windows-amd64.exe`
 
-            ## Checksums
-            Verify downloads using `checksums.txt`.
+            | Platform | File |
+            |----------|------|
+            | Linux AMD64 | `go-magic-linux-amd64` |
+            | Linux ARM64 | `go-magic-linux-arm64` |
+            | macOS Intel | `go-magic-darwin-amd64` |
+            | macOS Apple Silicon | `go-magic-darwin-arm64` |
+            | Windows AMD64 | `go-magic-windows-amd64.exe` |
+            | Windows ARM64 | `go-magic-windows-arm64.exe` |
+
+            ### ✅ Verify Downloads
+            Verify downloads using checksums:
+            ```bash
+            sha256sum -c checksums.txt
+            ```
+
+            ### 📖 Installation Guide
+            See [BUILD_GUIDE.md](https://github.com/${{ github.repository }}/blob/main/BUILD_GUIDE.md) for detailed installation instructions.
+
+            ### 📝 Changes
+            See the full changelog in the release notes below.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-latest-release:
+    needs: [build-desktop, build-go-cli]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Organize artifacts
+        run: |
+          mkdir -p nightly-assets
+
+          # Copy all artifacts
+          for artifact in artifacts/*; do
+            if [ -d "$artifact" ]; then
+              echo "Processing $artifact"
+              cp -r "$artifact"/* nightly-assets/ 2>/dev/null || true
+            fi
+          done
+
+          echo "=== Nightly assets ==="
+          ls -la nightly-assets/
+
+      - name: Generate checksums
+        run: |
+          cd nightly-assets
+          if [ "$(ls -A)" ]; then
+            sha256sum * > checksums.txt
+          else
+            touch checksums.txt
+          fi
+
+      - name: Update Nightly Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: 🌙 Nightly Build
+          files: nightly-assets/*
+          body: |
+            ## 🌙 Nightly Build
+
+            This is an automated nightly build from the latest `main` branch.
+
+            ⚠️ **Note**: This build may be unstable. For stable releases, please use the [latest versioned release](https://github.com/${{ github.repository }}/releases/latest).
+
+            ### 📥 Downloads
+            All platform binaries and installers are available below.
+
+            ### ✅ Verify Downloads
+            ```bash
+            sha256sum -c checksums.txt
+            ```
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  package-source:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout desktop repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout go-magic submodule
+        uses: actions/checkout@v4
+        with:
+          repository: magicwubiao/go-magic
+          path: go-magic
+
+      - name: Get version info
+        id: version_info
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="v1.0.0"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Packaging source for version: $VERSION"
+
+      - name: Package source code
+        run: |
+          VERSION="${{ steps.version_info.outputs.version }}"
+          PKG_NAME="go-magic-desktop-${VERSION}-source"
+          
+          # Create source package directory
+          mkdir -p "${PKG_NAME}"
+          
+          # Copy desktop repo files (excluding .git and go-magic)
+          rsync -av --exclude='.git' --exclude='go-magic' --exclude='target' --exclude='node_modules' --exclude='src-tauri/target' ./ "${PKG_NAME}/go-magic-desktop/"
+          
+          # Copy go-magic repo
+          rsync -av --exclude='.git' --exclude='target' --exclude='node_modules' ./go-magic/ "${PKG_NAME}/go-magic/"
+          
+          # Create tar.gz archive
+          tar -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          
+          # Create zip archive
+          zip -r "${PKG_NAME}.zip" "${PKG_NAME}"
+          
+          # Generate checksums
+          sha256sum "${PKG_NAME}.tar.gz" "${PKG_NAME}.zip" > "${PKG_NAME}-checksums.txt"
+          
+          echo "=== Source packages created ==="
+          ls -lh "${PKG_NAME}".*
+          cat "${PKG_NAME}-checksums.txt"
+
+      - name: Upload source packages to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version_info.outputs.version }}
+          files: |
+            go-magic-desktop-*-source.tar.gz
+            go-magic-desktop-*-source.zip
+            go-magic-desktop-*-source-checksums.txt
+          body: |
+            ### 📦 Source Code
+            
+            Complete source code packages including both `go-magic-desktop` and `go-magic` repositories:
+            
+            | Format | File | Description |
+            |--------|------|-------------|
+            | Tarball | `go-magic-desktop-*-source.tar.gz` | Unix/Linux source archive |
+            | ZIP | `go-magic-desktop-*-source.zip` | Windows/macOS source archive |
+            
+            ### ✅ Verify Source Package
+            ```bash
+            sha256sum -c go-magic-desktop-*-source-checksums.txt
+            ```
+            
+            ### 📁 Package Contents
+            ```
+            go-magic-desktop-{version}-source/
+            ├── go-magic-desktop/     # Desktop application source
+            │   ├── src-tauri/        # Rust/Tauri backend
+            │   ├── web-dist/         # Web frontend
+│   └── ...
+            └── go-magic/             # Backend service source
+                ├── cmd/              # Go commands
+                ├── internal/         # Internal packages
+                └── ...
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
