@@ -10,13 +10,14 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 // ============================================================================
 // Window State Management
 // ============================================================================
 
 const DEFAULT_WINDOW_WIDTH: f64 = 1024.0;
-const DEFAULT_WINDOW_HEIGHT: f64 = 768.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
 const MIN_WINDOW_WIDTH: f64 = 800.0;
 const MIN_WINDOW_HEIGHT: f64 = 600.0;
 
@@ -233,8 +234,14 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
 // Process Control
 // --------------------------------------------------------------------------
 
-fn show_error_dialog(_app_handle: &AppHandle, title: &str, message: &str) {
+fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
     eprintln!("{}: {}", title, message);
+    app_handle
+        .dialog()
+        .message(message)
+        .title(title)
+        .buttons(MessageDialogButtons::Ok)
+        .show(|_| {});
 }
 
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
@@ -244,10 +251,14 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     #[cfg(not(target_os = "windows"))]
     let binary_names = vec!["go-magic"];
 
+    let mut search_paths = Vec::new();
+
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
+            // 1. Check exe directory
             for name in &binary_names {
                 let path = exe_dir.join(name);
+                search_paths.push(path.clone());
                 if path.exists() {
                     #[cfg(debug_assertions)]
                     println!("Found backend in exe dir: {:?}", path);
@@ -255,10 +266,13 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
                 }
             }
 
+            // 2. Check resources directory relative to exe
             let resources_relative = exe_dir.join("resources");
+            search_paths.push(resources_relative.clone());
             if resources_relative.exists() {
                 for name in &binary_names {
                     let path = resources_relative.join(name);
+                    search_paths.push(path.clone());
                     if path.exists() {
                         #[cfg(debug_assertions)]
                         println!("Found backend in exe dir resources: {:?}", path);
@@ -267,12 +281,41 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
                 }
             }
 
+            // 3. Check app directory (Windows: same level as resources)
+            let app_dir = exe_dir.parent();
+            if let Some(app_dir) = app_dir {
+                for name in &binary_names {
+                    let path = app_dir.join(name);
+                    search_paths.push(path.clone());
+                    if path.exists() {
+                        #[cfg(debug_assertions)]
+                        println!("Found backend in app dir: {:?}", path);
+                        return Some(path);
+                    }
+
+                    // Check resources in app directory
+                    let resources_in_app = app_dir.join("resources");
+                    search_paths.push(resources_in_app.clone());
+                    if resources_in_app.exists() {
+                        let path = resources_in_app.join(name);
+                        search_paths.push(path.clone());
+                        if path.exists() {
+                            #[cfg(debug_assertions)]
+                            println!("Found backend in app resources: {:?}", path);
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+
             #[cfg(target_os = "macos")]
             {
                 let resources_dir = exe_dir.join("../Resources");
+                search_paths.push(resources_dir.clone());
                 if resources_dir.exists() {
                     for name in &binary_names {
                         let path = resources_dir.join(name);
+                        search_paths.push(path.clone());
                         if path.exists() {
                             #[cfg(debug_assertions)]
                             println!("Found backend in macOS Resources: {:?}", path);
@@ -284,8 +327,11 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
         }
     }
 
+    // 4. Check Tauri resource_dir
+    search_paths.push(resource_dir.to_path_buf());
     for name in &binary_names {
         let path = resource_dir.join(name);
+        search_paths.push(path.clone());
         #[cfg(debug_assertions)]
         println!("Checking resource_dir: {:?} for {}", path, name);
         if path.exists() {
@@ -295,13 +341,22 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
         }
     }
 
+    // 5. Check system PATH
     #[cfg(target_os = "windows")]
     let path_binary = "go-magic.exe";
     #[cfg(not(target_os = "windows"))]
     let path_binary = "go-magic";
 
     if Command::new(path_binary).arg("--version").output().is_ok() {
+        #[cfg(debug_assertions)]
+        println!("Found backend in PATH: {}", path_binary);
         return Some(PathBuf::from(path_binary));
+    }
+
+    // Log all searched paths for debugging
+    eprintln!("Backend executable not found. Searched paths:");
+    for (i, path) in search_paths.iter().enumerate() {
+        eprintln!("  {}: {:?} (exists: {})", i + 1, path, path.exists());
     }
 
     None
