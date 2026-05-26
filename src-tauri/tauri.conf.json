@@ -28,7 +28,6 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "fileName": "Go Magic_{version}_{arch}",
     "longDescription": "Go Magic - AI-powered development assistant",
     "shortDescription": "AI-powered Development Assistant",
     "targets": "all",
