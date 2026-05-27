@@ -4,6 +4,8 @@
 
 Tauri desktop application that packages Go Magic as a cross-platform desktop app.
 
+📖 **Installation Guide** → See [BUILD_GUIDE.md](BUILD_GUIDE.md) for detailed installation instructions.
+
 ## Architecture
 
 ```
@@ -169,7 +171,7 @@ The Tauri app automatically handles:
 1. **Backend Detection**: Find go-magic executable in resources directory
 2. **Backend Startup**: Auto-start `go-magic server --port <PORT>`
 3. **Health Check**: Wait for backend readiness (60s timeout)
-4. **UI Loading**: WebView loads `http://127.0.0.1:<PORT>/`
+4. **UI Loading**: WebView loads `http://[IP]:<PORT>/`
 5. **Window Management**: Show main window and focus
 6. **Graceful Shutdown**: Terminate backend process on window close
 
@@ -252,15 +254,6 @@ winget install Microsoft.WebView2
 ### macOS Security Warning
 
 System Preferences → Security & Privacy → Allow anyway
-
-## CI/CD
-
-Using GitHub Actions for automated builds:
-
-- **lint**: Code quality check
-- **build-desktop**: Multi-platform desktop app build
-- **build-go-cli**: Go CLI multi-platform build
-- **create-release**: Automated release
 
 ## License
 

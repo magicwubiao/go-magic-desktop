@@ -456,9 +456,6 @@ jobs:
             sha256sum -c checksums.txt
             ```
 
-            ### 📖 Installation Guide
-            See [BUILD_GUIDE.md](https://github.com/${{ github.repository }}/blob/main/BUILD_GUIDE.md) for detailed installation instructions.
-
             ### 📝 Changes
             See the full changelog in the release notes below.
         env:

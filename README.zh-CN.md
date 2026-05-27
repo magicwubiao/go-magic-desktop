@@ -4,6 +4,8 @@
 
 Tauri 桌面端应用，将 Go Magic 打包为跨平台桌面应用。
 
+📖 **安装指南** → 详细安装说明请参阅 [BUILD_GUIDE.md](BUILD_GUIDE.md)。
+
 ## 架构说明
 
 ```
@@ -169,7 +171,7 @@ Tauri 应用自动完成以下工作：
 1. **检测后端**: 在 resources 目录查找 go-magic 可执行文件
 2. **启动后端**: 自动启动 `go-magic server --port <PORT>`
 3. **健康检查**: 等待后端就绪（60秒超时）
-4. **加载界面**: WebView 加载 `http://127.0.0.1:<PORT>/`
+4. **加载界面**: WebView 加载 `http://[IP]:<PORT>/`
 5. **窗口管理**: 显示主窗口并聚焦
 6. **优雅关闭**: 窗口关闭时终止后端进程
 
@@ -252,15 +254,6 @@ winget install Microsoft.WebView2
 ### macOS 安全提示
 
 系统偏好设置 → 安全性与隐私 → 允许运行
-
-## 持续集成
-
-使用 GitHub Actions 自动构建：
-
-- **lint**: 代码质量检查
-- **build-desktop**: 多平台桌面应用构建
-- **build-go-cli**: Go CLI 多平台构建
-- **create-release**: 自动化发布
 
 ## 许可证
 
