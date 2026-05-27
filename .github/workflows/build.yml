@@ -92,17 +92,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get version from tag
+      - name: Get version automatically
         id: version
         shell: bash
         run: |
+          # Priority: 1. Git tag (v*), 2. package.json, 3. Cargo.toml
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            # Extract version from git tag (e.g., v0.1.4.6 -> 0.1.4.6)
             VERSION=${GITHUB_REF#refs/tags/v}
+            echo "Version from git tag: $VERSION"
           else
-            VERSION="1.0.0"
+            # Get version from package.json (npm package)
+            if [ -f "package.json" ]; then
+              VERSION=$(node -p "require('./package.json').version")
+              echo "Version from package.json: $VERSION"
+            # Fallback to Cargo.toml
+            elif [ -f "src-tauri/Cargo.toml" ]; then
+              VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/version = "//' | sed 's/"//' | tr -d ' ')
+              echo "Version from Cargo.toml: $VERSION"
+            else
+              echo "ERROR: Could not determine version"
+              exit 1
+            fi
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION"
+          echo "Final version: $VERSION"
 
       - name: Update version in tauri.conf.json
         shell: bash
@@ -406,15 +420,27 @@ jobs:
 
       - name: Get version info
         id: version_info
+        shell: bash
         run: |
+          # Priority: 1. Git tag (v*), 2. package.json
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            # Extract version from git tag (e.g., v0.1.4.6)
             VERSION=${GITHUB_REF#refs/tags/v}
-            echo "tag=v$VERSION" >> $GITHUB_OUTPUT
-            echo "name=Release v$VERSION" >> $GITHUB_OUTPUT
+            TAG_NAME="v$VERSION"
           else
-            echo "tag=v1.0.0" >> $GITHUB_OUTPUT
-            echo "name=Release v1.0.0" >> $GITHUB_OUTPUT
+            # Get version from package.json
+            if [ -f "package.json" ]; then
+              VERSION=$(node -p "require('./package.json').version")
+              TAG_NAME="v$VERSION"
+            else
+              # Fallback
+              VERSION="0.1.0"
+              TAG_NAME="v$VERSION"
+            fi
           fi
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "name=Release $TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
 
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
