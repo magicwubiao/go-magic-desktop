@@ -112,10 +112,10 @@ jobs:
           import json
           with open('src-tauri/tauri.conf.json', 'r') as f:
               config = json.load(f)
-          config['version'] = '$VERSION'
+          config['version'] = '${VERSION}'
           with open('src-tauri/tauri.conf.json', 'w') as f:
               json.dump(config, f, indent=2)
-          print(f'Updated version to $VERSION')
+          print(f'Updated version to ${VERSION}')
           "
           grep '"version"' src-tauri/tauri.conf.json
 
@@ -408,9 +408,9 @@ jobs:
         id: version_info
         run: |
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-            echo "tag=$VERSION" >> $GITHUB_OUTPUT
-            echo "name=Release $VERSION" >> $GITHUB_OUTPUT
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+            echo "name=Release v$VERSION" >> $GITHUB_OUTPUT
           else
             echo "tag=v1.0.0" >> $GITHUB_OUTPUT
             echo "name=Release v1.0.0" >> $GITHUB_OUTPUT
