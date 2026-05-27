@@ -1,0 +1,9 @@
+Go Magic Desktop Source Package
+Version: 0.4.6
+Packaged: 2026-05-27 03:52:11 UTC
+
+Contents:
+- go-magic-desktop/ : Desktop application source (Tauri + Web)
+
+For build instructions, see:
+- README.md
