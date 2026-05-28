@@ -1,5 +1,5 @@
 Go Magic Desktop Source Package
-Version: 0.4.6
+Version: 0.4.7
 Packaged: 2026-05-27 06:38:06 UTC
 
 Contents:
