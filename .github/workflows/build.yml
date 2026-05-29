@@ -33,21 +33,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            libglib2.0-dev \
-            libssl-dev \
-            libdbus-1-dev
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,11 +48,12 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast
 
   build-desktop:
-    needs: lint
+    # Run in parallel with lint (removed 'needs: lint')
     strategy:
       fail-fast: false
       matrix:
         include:
+          # macOS
           - platform: macos-latest
             target: x86_64-apple-darwin
             artifact_name: go-magic-desktop-macos-x64
@@ -76,13 +62,23 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: go-magic-desktop-macos-arm64
             goext: ""
+          # Linux
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact_name: go-magic-desktop-linux-x64
             goext: ""
+          - platform: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            artifact_name: go-magic-desktop-linux-arm64
+            goext: ""
+          # Windows
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: go-magic-desktop-windows-x64
+            goext: ".exe"
+          - platform: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: go-magic-desktop-windows-arm64
             goext: ".exe"
 
     runs-on: ${{ matrix.platform }}
@@ -233,9 +229,17 @@ jobs:
               export GOOS=linux
               export GOARCH=amd64
               ;;
+            aarch64-unknown-linux-gnu)
+              export GOOS=linux
+              export GOARCH=arm64
+              ;;
             x86_64-pc-windows-msvc)
               export GOOS=windows
               export GOARCH=amd64
+              ;;
+            aarch64-pc-windows-msvc)
+              export GOOS=windows
+              export GOARCH=arm64
               ;;
           esac
 
@@ -311,7 +315,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: ${{ matrix.artifact_name }}-${{ steps.version.outputs.version }}
           path: bundle-output/*
           retention-days: 30
 
@@ -329,6 +333,21 @@ jobs:
         with:
           repository: magicwubiao/go-magic
           path: go-magic
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          # Get version from go-magic package.json or desktop package.json
+          if [ -f "go-magic/package.json" ]; then
+            VERSION=$(node -p "require('./go-magic/package.json').version")
+          elif [ -f "package.json" ]; then
+            VERSION=$(node -p "require('./package.json').version")
+          else
+            VERSION="0.0.0"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -358,7 +377,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.version.outputs.version }}-CLI
           path: go-magic/go-magic-${{ matrix.goos }}-${{ matrix.goarch }}*
           retention-days: 30
 
@@ -372,51 +391,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: false
-
-      - name: List artifacts
-        run: |
-          echo "=== All artifacts ==="
-          find artifacts -type f -ls
-
-      - name: Organize artifacts for release
-        run: |
-          mkdir -p release-assets
-
-          # Copy desktop app artifacts
-          for artifact in artifacts/go-magic-desktop-*; do
-            if [ -d "$artifact" ]; then
-              echo "Processing $artifact"
-              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
-            fi
-          done
-
-          # Copy CLI artifacts
-          for artifact in artifacts/go-magic-linux-* artifacts/go-magic-darwin-* artifacts/go-magic-windows-*; do
-            if [ -d "$artifact" ]; then
-              echo "Processing $artifact"
-              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
-            fi
-          done
-
-          echo "=== Release assets ==="
-          ls -la release-assets/
-
-      - name: Generate checksums
-        run: |
-          cd release-assets
-          if [ "$(ls -A)" ]; then
-            sha256sum * > checksums.txt
-            cat checksums.txt
-          else
-            echo "No files to checksum"
-            touch checksums.txt
-          fi
 
       - name: Get version info
         id: version_info
@@ -440,7 +414,55 @@ jobs:
           fi
           echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "name=Release $TAG_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: List artifacts
+        run: |
+          echo "=== All artifacts ==="
+          find artifacts -type f -ls
+
+      - name: Organize artifacts for release
+        shell: bash
+        run: |
+          VERSION="${{ steps.version_info.outputs.version }}"
+          mkdir -p release-assets
+
+          # Copy desktop app artifacts (match pattern with version)
+          for artifact in artifacts/go-magic-desktop-*-${VERSION}; do
+            if [ -d "$artifact" ]; then
+              echo "Processing $artifact"
+              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
+            fi
+          done
+
+          # Copy CLI artifacts (match pattern with version)
+          for artifact in artifacts/go-magic-linux-*-${VERSION}-CLI artifacts/go-magic-darwin-*-${VERSION}-CLI artifacts/go-magic-windows-*-${VERSION}-CLI; do
+            if [ -d "$artifact" ]; then
+              echo "Processing $artifact"
+              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
+            fi
+          done
+
+          echo "=== Release assets ==="
+          ls -la release-assets/
+
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          if [ "$(ls -A)" ]; then
+            sha256sum * > checksums.txt
+            cat checksums.txt
+          else
+            echo "No files to checksum"
+            touch checksums.txt
+          fi
 
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
