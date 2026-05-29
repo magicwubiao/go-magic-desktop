@@ -1,6 +1,6 @@
 {
   "name": "go-magic-desktop",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Go Magic Desktop App - Powered by Tauri",
   "private": true,
   "type": "module",
