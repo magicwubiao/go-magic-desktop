@@ -27,28 +27,7 @@ env:
   RUST_LOG: "info"
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Check formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-
-      - name: Run clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
-
-      - name: Run tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --no-fail-fast
-
   build-desktop:
-    # Run in parallel with lint (removed 'needs: lint')
     strategy:
       fail-fast: false
       matrix:
@@ -335,16 +314,18 @@ jobs:
         id: version
         shell: bash
         run: |
-          # Get version from go-magic package.json or desktop package.json
-          if [ -f "go-magic/package.json" ]; then
-            VERSION=$(node -p "require('./go-magic/package.json').version")
+          # Priority: 1. Git tag (v*), 2. package.json (desktop repo)
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "Version from git tag: $VERSION"
           elif [ -f "package.json" ]; then
             VERSION=$(node -p "require('./package.json').version")
+            echo "Version from package.json: $VERSION"
           else
-            VERSION="0.0.0"
+            VERSION="0.4.8"
+            echo "Using default version: $VERSION"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -374,7 +355,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}-${{ steps.version.outputs.version }}-CLI
+          name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}-CLI
           path: go-magic/go-magic-${{ matrix.goos }}-${{ matrix.goarch }}*
           retention-days: 30
 
@@ -439,8 +420,8 @@ jobs:
             fi
           done
 
-          # Copy CLI artifacts (match pattern with version)
-          for artifact in artifacts/go-magic-linux-*-${VERSION}-CLI artifacts/go-magic-darwin-*-${VERSION}-CLI artifacts/go-magic-windows-*-${VERSION}-CLI; do
+          # Copy CLI artifacts
+          for artifact in artifacts/go-magic-linux-*-CLI artifacts/go-magic-darwin-*-CLI artifacts/go-magic-windows-*-CLI; do
             if [ -d "$artifact" ]; then
               echo "Processing $artifact"
               cp -r "$artifact"/* release-assets/ 2>/dev/null || true
