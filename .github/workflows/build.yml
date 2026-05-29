@@ -67,10 +67,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: go-magic-desktop-linux-x64
             goext: ""
-          - platform: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-            artifact_name: go-magic-desktop-linux-arm64
-            goext: ""
           # Windows
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
@@ -229,10 +225,6 @@ jobs:
               export GOOS=linux
               export GOARCH=amd64
               ;;
-            aarch64-unknown-linux-gnu)
-              export GOOS=linux
-              export GOARCH=arm64
-              ;;
             x86_64-pc-windows-msvc)
               export GOOS=windows
               export GOARCH=amd64
@@ -274,7 +266,12 @@ jobs:
             libsoup-3.0-dev \
             libglib2.0-dev \
             libssl-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            libglib2.0-0 \
+            gobject-introspection \
+            libgirepository1.0-dev \
+            cmake \
+            gcc
 
       - name: Install Tauri dependencies
         run: |
