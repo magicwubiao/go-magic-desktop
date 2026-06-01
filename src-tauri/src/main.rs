@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 // ============================================================================
@@ -651,6 +651,19 @@ fn main() {
                             return Err(e.into());
                         }
                     };
+
+                    // Intercept external links and open in system browser
+                    let app_handle_for_nav = app_handle.clone();
+                    window.on_navigation(move |url: Url| {
+                        let host = url.host_str().unwrap_or("");
+                        // Allow local backend URLs
+                        if host == "127.0.0.1" || host == "localhost" {
+                            return true;
+                        }
+                        // Block other navigation and open in system browser instead
+                        let _ = open::that(url.as_str());
+                        false
+                    });
 
                     #[cfg(debug_assertions)]
                     {
