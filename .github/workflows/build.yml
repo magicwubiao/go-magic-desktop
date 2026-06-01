@@ -322,7 +322,7 @@ jobs:
             VERSION=$(node -p "require('./package.json').version")
             echo "Version from package.json: $VERSION"
           else
-            VERSION="0.4.8"
+            VERSION="0.4.9"
             echo "Using default version: $VERSION"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
