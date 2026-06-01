@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 // ============================================================================
@@ -631,7 +631,8 @@ fn main() {
                         }
                     };
 
-                    let window_builder = WebviewWindowBuilder::new(
+                    // Intercept external links and open in system browser
+                    let window = match WebviewWindowBuilder::new(
                         app,
                         "main",
                         WebviewUrl::External(server_url.parse().unwrap()),
@@ -642,19 +643,8 @@ fn main() {
                     .position(x, y)
                     .focused(true)
                     .resizable(true)
-                    .fullscreen(false);
-
-                    let window = match window_builder.build() {
-                        Ok(w) => w,
-                        Err(e) => {
-                            eprintln!("Failed to create window: {}", e);
-                            return Err(e.into());
-                        }
-                    };
-
-                    // Intercept external links and open in system browser
-                    let app_handle_for_nav = app_handle.clone();
-                    window.on_navigation(move |url: Url| {
+                    .fullscreen(false)
+                    .on_navigation(|url| {
                         let host = url.host_str().unwrap_or("");
                         // Allow local backend URLs
                         if host == "127.0.0.1" || host == "localhost" {
@@ -663,7 +653,14 @@ fn main() {
                         // Block other navigation and open in system browser instead
                         let _ = open::that(url.as_str());
                         false
-                    });
+                    })
+                    .build() {
+                        Ok(w) => w,
+                        Err(e) => {
+                            eprintln!("Failed to create window: {}", e);
+                            return Err(e.into());
+                        }
+                    };
 
                     #[cfg(debug_assertions)]
                     {
