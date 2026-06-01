@@ -442,6 +442,34 @@ jobs:
             touch checksums.txt
           fi
 
+      - name: Delete old release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version_info.outputs.tag }}"
+          echo "Checking for existing assets in release $TAG..."
+          
+          # Get release ID and assets
+          RELEASE_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG")
+          
+          RELEASE_ID=$(echo "$RELEASE_DATA" | jq -r '.id')
+          
+          if [ "$RELEASE_ID" != "null" ] && [ -n "$RELEASE_ID" ]; then
+            echo "Found release ID: $RELEASE_ID"
+            
+            # Get asset IDs and delete them
+            echo "$RELEASE_DATA" | jq -r '.assets[].id' | while read -r ASSET_ID; do
+              if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
+                echo "Deleting asset ID: $ASSET_ID"
+                curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+                  "https://api.github.com/repos/${{ github.repository }}/releases/assets/$ASSET_ID"
+              fi
+            done
+          else
+            echo "No existing release found for tag $TAG"
+          fi
+
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
         with:
