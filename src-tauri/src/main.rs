@@ -654,7 +654,7 @@ fn main() {
                         let _ = open::that(url.as_str());
                         false
                     })
-                    .on_new_window_request(|_app, request| {
+                    .on_new_window(|_app, request| {
                         // Intercept target="_blank" links and open in system browser
                         let url = request.url();
                         let host = url.host_str().unwrap_or("");
