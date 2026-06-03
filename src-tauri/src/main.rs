@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::NewWindowResponse;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 // ============================================================================
@@ -654,17 +655,16 @@ fn main() {
                         let _ = open::that(url.as_str());
                         false
                     })
-                    .on_new_window(|_app, request| {
+                    .on_new_window(|url, _features| {
                         // Intercept target="_blank" links and open in system browser
-                        let url = request.url();
                         let host = url.host_str().unwrap_or("");
                         // Allow local backend URLs
                         if host == "127.0.0.1" || host == "localhost" {
-                            return true;
+                            return NewWindowResponse::Allow;
                         }
                         // Open external links in system browser
                         let _ = open::that(url.as_str());
-                        false
+                        NewWindowResponse::Deny
                     })
                     .build() {
                         Ok(w) => w,
