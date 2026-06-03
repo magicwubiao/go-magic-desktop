@@ -654,6 +654,18 @@ fn main() {
                         let _ = open::that(url.as_str());
                         false
                     })
+                    .on_new_window_request(|_app, request| {
+                        // Intercept target="_blank" links and open in system browser
+                        let url = request.url();
+                        let host = url.host_str().unwrap_or("");
+                        // Allow local backend URLs
+                        if host == "127.0.0.1" || host == "localhost" {
+                            return true;
+                        }
+                        // Open external links in system browser
+                        let _ = open::that(url.as_str());
+                        false
+                    })
                     .build() {
                         Ok(w) => w,
                         Err(e) => {
