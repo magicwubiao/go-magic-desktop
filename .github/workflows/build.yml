@@ -26,6 +26,10 @@ env:
   RUST_BACKTRACE: "1"
   RUST_LOG: "info"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-desktop:
     strategy:
@@ -58,6 +62,13 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
+      - name: Clean workspace
+        shell: bash
+        run: |
+          echo "Cleaning workspace..."
+          rm -rf bundle-output src-tauri/target src-tauri/resources web-dist go-magic 2>/dev/null || true
+          echo "Workspace cleaned"
+
       - name: Checkout desktop repo
         uses: actions/checkout@v4
         with:
@@ -367,6 +378,13 @@ jobs:
       contents: write
 
     steps:
+      - name: Clean workspace
+        shell: bash
+        run: |
+          echo "Cleaning workspace for release..."
+          rm -rf artifacts release-assets 2>/dev/null || true
+          echo "Workspace cleaned"
+
       - name: Checkout
         uses: actions/checkout@v4
 
