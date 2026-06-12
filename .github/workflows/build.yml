@@ -97,7 +97,7 @@ jobs:
           ls -laR "$BUNDLE_DIR" 2>/dev/null || echo "(bundle dir not found)"
           mkdir -p bundle-output
           if [ -d "$BUNDLE_DIR" ]; then
-            find "$BUNDLE_DIR" -type f -exec cp {} bundle-output/ \;
+            find "$BUNDLE_DIR" -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" \) -exec cp {} bundle-output/ \;
           fi
           echo "=== Final bundle-output ==="
           ls -la bundle-output/
