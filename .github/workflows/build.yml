@@ -90,16 +90,25 @@ jobs:
 
       - name: Collect artifacts
         run: |
+          echo "=== Build output tree (first 3 levels) ==="
+          find src-tauri/target -maxdepth 3 -type f 2>/dev/null | head -50 || true
+          echo "=== Bundle dir contents ==="
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+          ls -laR "$BUNDLE_DIR" 2>/dev/null || echo "(bundle dir not found)"
           mkdir -p bundle-output
-          cp src-tauri/target/${{ matrix.target }}/release/bundle/* bundle-output/ 2>/dev/null || true
+          if [ -d "$BUNDLE_DIR" ]; then
+            find "$BUNDLE_DIR" -type f -exec cp {} bundle-output/ \;
+          fi
+          echo "=== Final bundle-output ==="
           ls -la bundle-output/
         shell: bash
 
       - uses: actions/upload-artifact@v4
         with:
           name: go-magic-desktop-${{ matrix.name }}
-          path: bundle-output/*
+          path: bundle-output/
           retention-days: 30
+          if-no-files-found: warn
 
   release:
     needs: build
