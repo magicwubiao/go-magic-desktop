@@ -122,9 +122,22 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - run: cd release-assets && sha256sum * > checksums.txt && cat checksums.txt
+      - name: Prepare release assets
+        run: |
+          echo "=== Files before cleanup ==="
+          ls -la release-assets/
+          echo "=== Removing empty / tiny files (<= 1 byte) ==="
+          find release-assets -type f -size -2c -delete
+          echo "=== Files after cleanup ==="
+          ls -la release-assets/
+          echo "=== Generating checksums ==="
+          cd release-assets
+          sha256sum * > checksums.txt
+          cat checksums.txt
+          echo "=== File count: $(ls -1 | wc -l) ==="
 
       - uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
           generate_release_notes: true
+          fail_on_unmatched_files: false
