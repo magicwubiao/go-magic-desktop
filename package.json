@@ -5,27 +5,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "tauri": "tauri",
     "dev": "tauri dev",
-    "dev:debug": "tauri dev --debug",
-    "version:sync": "node sync-version.mjs",
-    "build": "npm run version:sync && tauri build",
-    "build:release": "npm run version:sync && tauri build --release",
-    "build:windows": "tauri build --target x86_64-pc-windows-msvc",
-    "build:macos": "tauri build --target x86_64-apple-darwin",
-    "build:macos:arm": "tauri build --target aarch64-apple-darwin",
-    "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
-    "build:linux:arm": "tauri build --target aarch64-unknown-linux-gnu",
-    "build:web": "cd ../go-magic/web && npm run build",
-    "bundle:all": "npm run build:web && npm run build",
-    "clean": "cd src-tauri && cargo clean && rm -rf target",
-    "check": "cargo check && cargo clippy",
-    "fmt": "cargo fmt",
-    "lint": "cargo clippy -- -D warnings",
-    "test": "cargo test",
-    "update": "cargo update",
-    "info": "tauri info",
-    "icon": "tauri icon"
+    "build": "node sync-version.mjs && tauri build",
+    "build:windows": "node sync-version.mjs && tauri build --target x86_64-pc-windows-msvc",
+    "build:macos": "node sync-version.mjs && tauri build --target x86_64-apple-darwin",
+    "build:linux": "node sync-version.mjs && tauri build --target x86_64-unknown-linux-gnu",
+    "version": "node sync-version.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0"

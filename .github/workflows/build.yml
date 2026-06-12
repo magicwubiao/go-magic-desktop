@@ -1,21 +1,12 @@
-name: Build Desktop App
+name: Build
 
 on:
-  workflow_dispatch:
-    inputs:
-      skip_frontend:
-        description: 'Skip frontend build'
-        required: false
-        default: 'false'
-        type: boolean
   push:
     branches: [main, master]
-    tags:
-      - 'v*'
+    tags: ['v*']
   pull_request:
     branches: [main, master]
-  release:
-    types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -24,174 +15,94 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
-  build-desktop:
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-            artifact: go-magic-desktop-macos-x64
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            artifact: go-magic-desktop-macos-arm64
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            artifact: go-magic-desktop-linux-x64
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: go-magic-desktop-windows-x64
-          - platform: windows-latest
-            target: aarch64-pc-windows-msvc
-            artifact: go-magic-desktop-windows-arm64
+          - { os: macos-latest,   target: x86_64-apple-darwin,        name: macos-x64 }
+          - { os: macos-latest,   target: aarch64-apple-darwin,       name: macos-arm64 }
+          - { os: ubuntu-22.04,   target: x86_64-unknown-linux-gnu,   name: linux-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,     name: windows-x64 }
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Sync version
-        shell: bash
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-            echo "Using git tag version: $VERSION"
-            node sync-version.mjs "$VERSION"
-          else
-            node sync-version.mjs
-          fi
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-
-      - name: Checkout go-magic
-        uses: actions/checkout@v4
-        with:
-          repository: magicwubiao/go-magic
-          path: go-magic
-
-      - name: Build Web UI
-        run: |
-          cd go-magic/web
-          npm install
-          npm run build
-
-      - name: Copy Web Dist
-        shell: bash
-        run: cp -r go-magic/internal/server/dist web-dist/
-
-      - name: Build go-magic backend
-        shell: bash
-        run: |
-          cd go-magic
-          case "${{ matrix.target }}" in
-            *apple-darwin*) GOOS=darwin; GOARCH=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'amd64' }} ;;
-            *linux*) GOOS=linux; GOARCH=amd64 ;;
-            *windows*) GOOS=windows; GOARCH=${{ matrix.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'amd64' }} ;;
-          esac
-          EXT="${{ runner.os == 'Windows' && '.exe' || '' }}"
-          echo "GOOS=$GOOS GOARCH=$GOARCH"
-          CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o go-magic$EXT ./cmd/magic
-          mkdir -p ../src-tauri/resources
-          cp go-magic$EXT ../src-tauri/resources/go-magic$EXT
-
-      - name: Install Linux deps
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf
-
-      - name: Install deps & build Tauri
-        run: |
-          npm install
-          cd src-tauri
-          npm install
-          npx tauri build --target ${{ matrix.target }}
-
-      - name: Collect artifacts
-        shell: bash
-        run: |
-          mkdir -p bundle-output
-          cp src-tauri/target/${{ matrix.target }}/release/bundle/* bundle-output/ 2>/dev/null || true
-          cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop* bundle-output/ 2>/dev/null || true
-          ls -la bundle-output/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: bundle-output/*
-          retention-days: 30
-
-  build-go-cli:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          repository: magicwubiao/go-magic
-          path: go-magic
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: go-magic/go.sum
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Build Web UI
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Sync version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            node sync-version.mjs "${GITHUB_REF#refs/tags/v}"
+          else
+            node sync-version.mjs
+          fi
+        shell: bash
+
+      - uses: actions/checkout@v4
+        with:
+          repository: magicwubiao/go-magic
+          path: go-magic
+
+      - name: Build web UI
         run: |
           cd go-magic/web
           npm install
           npm run build
+          cp -r ../internal/server/dist ../../web-dist/
+        shell: bash
 
-      - name: Build CLI
-        env:
-          EXT: ${{ matrix.goos == 'windows' && '.exe' || '' }}
+      - name: Build backend
         run: |
           cd go-magic
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic-${{ matrix.goos }}-${{ matrix.goarch }}${{ env.EXT }} ./cmd/magic
+          case "${{ matrix.target }}" in
+            *apple-darwin*) GOARCH="${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'amd64' }}"; GOOS=darwin ;;
+            *linux*)        GOARCH=amd64; GOOS=linux ;;
+            *windows*)      GOARCH="${{ matrix.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'amd64' }}"; GOOS=windows ;;
+          esac
+          EXT="${{ runner.os == 'Windows' && '.exe' || '' }}"
+          CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o go-magic$EXT ./cmd/magic
+          mkdir -p ../src-tauri/resources
+          cp go-magic$EXT ../src-tauri/resources/go-magic$EXT
+        shell: bash
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf
+
+      - name: Build Tauri
+        run: |
+          npm install
+          cd src-tauri
+          npx tauri build --target ${{ matrix.target }}
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p bundle-output
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/* bundle-output/ 2>/dev/null || true
+          ls -la bundle-output/
+        shell: bash
 
       - uses: actions/upload-artifact@v4
         with:
-          name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}-CLI
-          path: go-magic/go-magic-*
+          name: go-magic-desktop-${{ matrix.name }}
+          path: bundle-output/*
           retention-days: 30
 
   release:
-    needs: [build-desktop, build-go-cli]
+    needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -202,14 +113,9 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Checksums
-        run: |
-          cd release-assets
-          sha256sum * > checksums.txt
-          cat checksums.txt
+      - run: cd release-assets && sha256sum * > checksums.txt && cat checksums.txt
 
       - uses: softprops/action-gh-release@v2
         with:
           files: release-assets/*
           generate_release_notes: true
-          fail_on_unmatched_files: false

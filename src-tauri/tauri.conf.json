@@ -4,7 +4,7 @@
   "version": "0.4.12",
   "identifier": "com.gomagic.desktop",
   "build": {
-    "beforeBuildCommand": "node ../sync-version.mjs",
+    "beforeBuildCommand": "cd .. && node sync-version.mjs",
     "beforeDevCommand": "",
     "devUrl": "http://localhost:5000",
     "frontendDist": "../web-dist"
