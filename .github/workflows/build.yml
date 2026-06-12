@@ -15,20 +15,17 @@ on:
   pull_request:
     branches: [main, master]
   release:
-    types: [published, created]
+    types: [published]
 
 permissions:
   contents: write
-  actions: read
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  RUST_BACKTRACE: "1"
-  RUST_LOG: "info"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-desktop:
@@ -36,96 +33,61 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS
           - platform: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: go-magic-desktop-macos-x64
-            goext: ""
+            artifact: go-magic-desktop-macos-x64
           - platform: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: go-magic-desktop-macos-arm64
-            goext: ""
-          # Linux
+            artifact: go-magic-desktop-macos-arm64
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact_name: go-magic-desktop-linux-x64
-            goext: ""
-          # Windows
+            artifact: go-magic-desktop-linux-x64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: go-magic-desktop-windows-x64
-            goext: ".exe"
+            artifact: go-magic-desktop-windows-x64
           - platform: windows-latest
             target: aarch64-pc-windows-msvc
-            artifact_name: go-magic-desktop-windows-arm64
-            goext: ".exe"
+            artifact: go-magic-desktop-windows-arm64
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - name: Clean workspace
+      - uses: actions/checkout@v4
+
+      - name: Sync version
         shell: bash
         run: |
-          echo "Cleaning workspace..."
-          rm -rf bundle-output src-tauri/target src-tauri/resources web-dist go-magic 2>/dev/null || true
-          echo "Workspace cleaned"
-
-      - name: Checkout desktop repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get version automatically
-        id: version
-        shell: bash
-        run: |
-          # Priority: 1. Git tag (v*), 2. package.json, 3. Cargo.toml
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            # Extract version from git tag (e.g., v0.1.4.6 -> 0.1.4.6)
-            VERSION=${GITHUB_REF#refs/tags/v}
-            echo "Version from git tag: $VERSION"
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "Using git tag version: $VERSION"
+            node sync-version.mjs "$VERSION"
           else
-            # Get version from package.json (npm package)
-            if [ -f "package.json" ]; then
-              VERSION=$(node -p "require('./package.json').version")
-              echo "Version from package.json: $VERSION"
-            # Fallback to Cargo.toml
-            elif [ -f "src-tauri/Cargo.toml" ]; then
-              VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/version = "//' | sed 's/"//' | tr -d ' ')
-              echo "Version from Cargo.toml: $VERSION"
-            else
-              echo "ERROR: Could not determine version"
-              exit 1
-            fi
+            node sync-version.mjs
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Final version: $VERSION"
 
-      - name: Update version in tauri.conf.json
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          python3 -c "
-          import json
-          with open('src-tauri/tauri.conf.json', 'r') as f:
-              config = json.load(f)
-          config['version'] = '${VERSION}'
-          with open('src-tauri/tauri.conf.json', 'w') as f:
-              json.dump(config, f, indent=2)
-          print(f'Updated version to ${VERSION}')
-          "
-          grep '"version"' src-tauri/tauri.conf.json
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
 
-      - name: Update version in Cargo.toml
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            sed -i '' "s/^version = .*/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          else
-            sed -i "s/^version = .*/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          fi
-          echo "Updated Cargo.toml version to $VERSION"
-          grep "^version" src-tauri/Cargo.toml
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
 
       - name: Checkout go-magic
         uses: actions/checkout@v4
@@ -133,176 +95,55 @@ jobs:
           repository: magicwubiao/go-magic
           path: go-magic
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-
-      - name: Cache cargo target
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Install root npm dependencies
-        run: npm install
-
       - name: Build Web UI
-        shell: bash
         run: |
           cd go-magic/web
           npm install
           npm run build
-          echo "=== Checking dist output ==="
-          ls -la ../internal/server/dist/ || (echo "FATAL: dist not found after build!" && exit 1)
 
-      - name: Verify web dist for Go embed
+      - name: Copy Web Dist
         shell: bash
-        run: |
-          if [ -d "go-magic/internal/server/dist" ]; then
-            echo "Web dist OK: go-magic/internal/server/dist/"
-            ls go-magic/internal/server/dist/ | head -5
-          else
-            echo "ERROR: go-magic/internal/server/dist/ not found!"
-            exit 1
-          fi
-
-      - name: Copy Web Dist to Desktop Repo
-        shell: bash
-        run: |
-          rm -rf web-dist
-          cp -r go-magic/internal/server/dist web-dist/
-          ls -la web-dist/
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
-          cache-dependency-path: go-magic/go.sum
+        run: cp -r go-magic/internal/server/dist web-dist/
 
       - name: Build go-magic backend
         shell: bash
-        env:
-          EXT: ${{ matrix.goext }}
         run: |
           cd go-magic
-
           case "${{ matrix.target }}" in
-            x86_64-apple-darwin)
-              export GOOS=darwin
-              export GOARCH=amd64
-              ;;
-            aarch64-apple-darwin)
-              export GOOS=darwin
-              export GOARCH=arm64
-              ;;
-            x86_64-unknown-linux-gnu)
-              export GOOS=linux
-              export GOARCH=amd64
-              ;;
-            x86_64-pc-windows-msvc)
-              export GOOS=windows
-              export GOARCH=amd64
-              ;;
-            aarch64-pc-windows-msvc)
-              export GOOS=windows
-              export GOARCH=arm64
-              ;;
+            *apple-darwin*) GOOS=darwin; GOARCH=${{ matrix.target == 'aarch64-apple-darwin' && 'arm64' || 'amd64' }} ;;
+            *linux*) GOOS=linux; GOARCH=amd64 ;;
+            *windows*) GOOS=windows; GOARCH=${{ matrix.target == 'aarch64-pc-windows-msvc' && 'arm64' || 'amd64' }} ;;
           esac
+          EXT="${{ runner.os == 'Windows' && '.exe' || '' }}"
+          echo "GOOS=$GOOS GOARCH=$GOARCH"
+          CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="-s -w" -o go-magic$EXT ./cmd/magic
+          mkdir -p ../src-tauri/resources
+          cp go-magic$EXT ../src-tauri/resources/go-magic$EXT
 
-          echo "Building for GOOS=$GOOS, GOARCH=$GOARCH"
-          CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic${{ env.EXT }} ./cmd/magic
-          ls -la go-magic${{ env.EXT }}
-
-      - name: Copy backend to resources directory
-        shell: bash
-        env:
-          EXT: ${{ matrix.goext }}
-        run: |
-          mkdir -p src-tauri/resources
-          cp go-magic/go-magic${{ env.EXT }} src-tauri/resources/go-magic${{ env.EXT }}
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            chmod +x src-tauri/resources/go-magic${{ env.EXT }}
-          fi
-          echo "=== Resources directory ==="
-          ls -la src-tauri/resources/
-
-      - name: Install Linux dependencies
+      - name: Install Linux deps
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libgtk-3-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            libglib2.0-dev \
-            libssl-dev \
-            libdbus-1-dev \
-            libglib2.0-0 \
-            gobject-introspection \
-            libgirepository1.0-dev \
-            cmake \
-            gcc
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf
 
-      - name: Install Tauri dependencies
+      - name: Install deps & build Tauri
         run: |
+          npm install
           cd src-tauri
           npm install
+          npx tauri build --target ${{ matrix.target }}
 
-      - name: Build Tauri app
-        run: |
-          cd src-tauri && npx tauri build --target ${{ matrix.target }}
-
-      - name: Prepare bundle output
+      - name: Collect artifacts
         shell: bash
-        env:
-          EXT: ${{ matrix.goext }}
         run: |
           mkdir -p bundle-output
-
-          if [ -f "src-tauri/target/${{ matrix.target }}/release/go-magic-desktop" ]; then
-            cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop bundle-output/
-            cp go-magic/go-magic${EXT} bundle-output/
-          fi
-          if [ -f "src-tauri/target/${{ matrix.target }}/release/go-magic-desktop.exe" ]; then
-            cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop.exe bundle-output/
-            cp go-magic/go-magic${EXT} bundle-output/
-          fi
-
-          for dir in nsis msi deb appimage dmg; do
-            if [ -d "src-tauri/target/${{ matrix.target }}/release/bundle/$dir" ]; then
-              find "src-tauri/target/${{ matrix.target }}/release/bundle/$dir" -type f \( -name "*.exe" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.dmg" \) -exec cp {} bundle-output/ \;
-            fi
-          done
-
-          echo "=== Bundle output ==="
+          cp src-tauri/target/${{ matrix.target }}/release/bundle/* bundle-output/ 2>/dev/null || true
+          cp src-tauri/target/${{ matrix.target }}/release/go-magic-desktop* bundle-output/ 2>/dev/null || true
           ls -la bundle-output/
-          echo "=== File sizes ==="
-          du -h bundle-output/*
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}-${{ steps.version.outputs.version }}
+          name: ${{ matrix.artifact }}
           path: bundle-output/*
           retention-days: 30
 
@@ -315,38 +156,18 @@ jobs:
         goarch: [amd64, arm64]
 
     steps:
-      - name: Checkout go-magic
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: magicwubiao/go-magic
           path: go-magic
 
-      - name: Get version
-        id: version
-        shell: bash
-        run: |
-          # Priority: 1. Git tag (v*), 2. package.json (desktop repo)
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-            echo "Version from git tag: $VERSION"
-          elif [ -f "package.json" ]; then
-            VERSION=$(node -p "require('./package.json').version")
-            echo "Version from package.json: $VERSION"
-          else
-            VERSION="0.4.12"
-            echo "Using default version: $VERSION"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache: true
           cache-dependency-path: go-magic/go.sum
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
@@ -356,179 +177,39 @@ jobs:
           npm install
           npm run build
 
-      - name: Build Go CLI
+      - name: Build CLI
         env:
           EXT: ${{ matrix.goos == 'windows' && '.exe' || '' }}
         run: |
           cd go-magic
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 go build -ldflags="-s -w" -o go-magic-${{ matrix.goos }}-${{ matrix.goarch }}${{ env.EXT }} ./cmd/magic
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: go-magic-${{ matrix.goos }}-${{ matrix.goarch }}-CLI
-          path: go-magic/go-magic-${{ matrix.goos }}-${{ matrix.goarch }}*
+          path: go-magic/go-magic-*
           retention-days: 30
 
-  create-release:
+  release:
     needs: [build-desktop, build-go-cli]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-
     steps:
-      - name: Clean workspace
-        shell: bash
-        run: |
-          echo "Cleaning workspace for release..."
-          rm -rf artifacts release-assets 2>/dev/null || true
-          echo "Workspace cleaned"
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Get version info
-        id: version_info
-        shell: bash
-        run: |
-          # Priority: 1. Git tag (v*), 2. package.json
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            # Extract version from git tag (e.g., v0.1.4.6)
-            VERSION=${GITHUB_REF#refs/tags/v}
-            TAG_NAME="v$VERSION"
-          else
-            # Get version from package.json
-            if [ -f "package.json" ]; then
-              VERSION=$(node -p "require('./package.json').version")
-              TAG_NAME="v$VERSION"
-            else
-              # Fallback
-              VERSION="0.1.0"
-              TAG_NAME="v$VERSION"
-            fi
-          fi
-          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "name=Release $TAG_NAME" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          merge-multiple: false
+          path: release-assets
+          merge-multiple: true
 
-      - name: List artifacts
-        run: |
-          echo "=== All artifacts ==="
-          find artifacts -type f -ls
-
-      - name: Organize artifacts for release
-        shell: bash
-        run: |
-          VERSION="${{ steps.version_info.outputs.version }}"
-          mkdir -p release-assets
-
-          # Copy desktop app artifacts (match pattern with version)
-          for artifact in artifacts/go-magic-desktop-*-${VERSION}; do
-            if [ -d "$artifact" ]; then
-              echo "Processing $artifact"
-              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
-            fi
-          done
-
-          # Copy CLI artifacts
-          for artifact in artifacts/go-magic-linux-*-CLI artifacts/go-magic-darwin-*-CLI artifacts/go-magic-windows-*-CLI; do
-            if [ -d "$artifact" ]; then
-              echo "Processing $artifact"
-              cp -r "$artifact"/* release-assets/ 2>/dev/null || true
-            fi
-          done
-
-          echo "=== Release assets ==="
-          ls -la release-assets/
-
-      - name: Generate checksums
+      - name: Checksums
         run: |
           cd release-assets
-          if [ "$(ls -A)" ]; then
-            sha256sum * > checksums.txt
-            cat checksums.txt
-          else
-            echo "No files to checksum"
-            touch checksums.txt
-          fi
+          sha256sum * > checksums.txt
+          cat checksums.txt
 
-      - name: Delete old release assets
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.version_info.outputs.tag }}"
-          echo "Checking for existing assets in release $TAG..."
-          
-          # Get release ID and assets
-          RELEASE_DATA=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$TAG")
-          
-          RELEASE_ID=$(echo "$RELEASE_DATA" | jq -r '.id')
-          
-          if [ "$RELEASE_ID" != "null" ] && [ -n "$RELEASE_ID" ]; then
-            echo "Found release ID: $RELEASE_ID"
-            
-            # Get asset IDs and delete them
-            echo "$RELEASE_DATA" | jq -r '.assets[].id' | while read -r ASSET_ID; do
-              if [ -n "$ASSET_ID" ] && [ "$ASSET_ID" != "null" ]; then
-                echo "Deleting asset ID: $ASSET_ID"
-                curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-                  "https://api.github.com/repos/${{ github.repository }}/releases/assets/$ASSET_ID"
-              fi
-            done
-          else
-            echo "No existing release found for tag $TAG"
-          fi
-
-      - name: Create or Update Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version_info.outputs.tag }}
-          name: ${{ steps.version_info.outputs.name }}
           files: release-assets/*
           generate_release_notes: true
-          body: |
-            ## 🚀 Go Magic Desktop Release
-
-            ### 📥 Desktop Applications
-            Download the appropriate installer for your platform:
-
-            | Platform | File | Description |
-            |----------|------|-------------|
-            | **Windows** | `go-magic-desktop_*.exe` | NSIS Installer |
-            | **Windows** | `go-magic-desktop_*.msi` | MSI Installer |
-            | **macOS Intel** | `go-magic-desktop_*.dmg` | DMG for x64 |
-            | **macOS Apple Silicon** | `go-magic-desktop_*.dmg` | DMG for ARM64 |
-            | **Linux** | `go-magic-desktop_*.AppImage` | AppImage (portable) |
-            | **Linux** | `go-magic-desktop_*.deb` | Debian package |
-
-            ### 🖥️ CLI Tools
-            Download the CLI binary for your platform:
-
-            | Platform | File |
-            |----------|------|
-            | Linux AMD64 | `go-magic-linux-amd64` |
-            | Linux ARM64 | `go-magic-linux-arm64` |
-            | macOS Intel | `go-magic-darwin-amd64` |
-            | macOS Apple Silicon | `go-magic-darwin-arm64` |
-            | Windows AMD64 | `go-magic-windows-amd64.exe` |
-            | Windows ARM64 | `go-magic-windows-arm64.exe` |
-
-            ### ✅ Verify Downloads
-            Verify downloads using checksums:
-            ```bash
-            sha256sum -c checksums.txt
-            ```
-
-            ### 📝 Changes
-            See the full changelog in the release notes below.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fail_on_unmatched_files: false

@@ -532,7 +532,7 @@ fn restart_backend_cmd(app_handle: AppHandle) {
 fn get_app_info() -> serde_json::Value {
     serde_json::json!({
         "name": env!("CARGO_PKG_NAME"),
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": env!("APP_VERSION"),
         "description": env!("CARGO_PKG_DESCRIPTION"),
         "mode": "process-isolated"
     })
