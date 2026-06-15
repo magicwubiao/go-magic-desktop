@@ -2,7 +2,7 @@
 // 用法:
 //   node sync-version.mjs              同步所有文件
 //   node sync-version.mjs 1.2.3        设置具体版本
-//   node sync-version.mjs --patch      递增补丁版本 (0.4.12 → 0.4.13)
+//   node sync-version.mjs --patch      递增补丁版本 (0.4.12 → 0.4.14)
 //   node sync-version.mjs --minor      递增次版本号 (0.4.12 → 0.5.0)
 //   node sync-version.mjs --major      递增主版本号 (0.4.12 → 1.0.0)
 import fs from 'fs'
