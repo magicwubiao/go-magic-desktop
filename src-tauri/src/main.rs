@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri::webview::NewWindowResponse;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_shell::ShellExt;
 
 // ============================================================================
 // Window State Management
@@ -243,6 +244,21 @@ fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
         .title(title)
         .buttons(MessageDialogButtons::Ok)
         .show(|_| {});
+}
+
+fn open_external_link(app_handle: &AppHandle, url: &str) {
+    #[cfg(debug_assertions)]
+    println!("Opening external link: {}", url);
+
+    // 优先使用 Tauri 的 shell 插件（通过配置中 shell.open=true 授权）
+    // 在 Windows 上该方式会调用 ShellExecute，兼容性更好
+    if let Err(e) = app_handle.shell().open(url, None::<&str>) {
+        eprintln!("shell.open failed for {}: {}", url, e);
+        // 回退到 open crate
+        if let Err(e2) = open::that(url) {
+            eprintln!("open::that also failed for {}: {}", url, e2);
+        }
+    }
 }
 
 fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
@@ -645,26 +661,32 @@ fn main() {
                     .focused(true)
                     .resizable(true)
                     .fullscreen(false)
-                    .on_navigation(|url| {
-                        let host = url.host_str().unwrap_or("");
-                        // Allow local backend URLs
-                        if host == "127.0.0.1" || host == "localhost" {
-                            return true;
+                    .on_navigation({
+                        let app_handle_clone = app_handle.clone();
+                        move |url| {
+                            let host = url.host_str().unwrap_or("");
+                            // Allow local backend URLs
+                            if host == "127.0.0.1" || host == "localhost" {
+                                return true;
+                            }
+                            // Block other navigation and open in system browser instead
+                            open_external_link(&app_handle_clone, url.as_str());
+                            false
                         }
-                        // Block other navigation and open in system browser instead
-                        let _ = open::that(url.as_str());
-                        false
                     })
-                    .on_new_window(|url, _features| {
-                        // Intercept target="_blank" links and open in system browser
-                        let host = url.host_str().unwrap_or("");
-                        // Allow local backend URLs
-                        if host == "127.0.0.1" || host == "localhost" {
-                            return NewWindowResponse::Allow;
+                    .on_new_window({
+                        let app_handle_clone = app_handle.clone();
+                        move |url, _features| {
+                            // Intercept target="_blank" links and open in system browser
+                            let host = url.host_str().unwrap_or("");
+                            // Allow local backend URLs
+                            if host == "127.0.0.1" || host == "localhost" {
+                                return NewWindowResponse::Allow;
+                            }
+                            // Open external links in system browser
+                            open_external_link(&app_handle_clone, url.as_str());
+                            NewWindowResponse::Deny
                         }
-                        // Open external links in system browser
-                        let _ = open::that(url.as_str());
-                        NewWindowResponse::Deny
                     })
                     .build() {
                         Ok(w) => w,
