@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Go Magic",
-  "version": "0.4.21",
+  "version": "0.4.22",
   "identifier": "com.gomagic.desktop",
   "build": {
     "beforeBuildCommand": "",
@@ -61,8 +61,5 @@
     }
   },
   "plugins": {
-    "shell": {
-      "open": true
-    }
   }
 }

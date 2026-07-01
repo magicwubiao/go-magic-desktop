@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri::webview::NewWindowResponse;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
-use tauri_plugin_shell::ShellExt;
+
 
 // ============================================================================
 // Window State Management
@@ -246,18 +246,12 @@ fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
         .show(|_| {});
 }
 
-fn open_external_link(app_handle: &AppHandle, url: &str) {
+fn open_external_link(_app_handle: &AppHandle, url: &str) {
     #[cfg(debug_assertions)]
     println!("Opening external link: {}", url);
 
-    // 优先使用 Tauri 的 shell 插件（通过配置中 shell.open=true 授权）
-    // 在 Windows 上该方式会调用 ShellExecute，兼容性更好
-    if let Err(e) = app_handle.shell().open(url, None::<&str>) {
-        eprintln!("shell.open failed for {}: {}", url, e);
-        // 回退到 open crate
-        if let Err(e2) = open::that(url) {
-            eprintln!("open::that also failed for {}: {}", url, e2);
-        }
+    if let Err(e) = open::that(url) {
+        eprintln!("Failed to open external link {}: {}", url, e);
     }
 }
 
@@ -441,10 +435,12 @@ fn start_backend(
                 if i >= 50 {
                     break;
                 }
+                #[cfg(debug_assertions)]
                 if let Ok(line) = line {
-                    #[cfg(debug_assertions)]
                     println!("[backend] {}", line);
                 }
+                #[cfg(not(debug_assertions))]
+                let _ = line;
             }
         }
         if let Some(stderr) = stderr {
@@ -572,7 +568,6 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())

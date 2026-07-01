@@ -1,6 +1,6 @@
 [package]
 name = "go-magic-desktop"
-version = "0.4.21"
+version = "0.4.22"
 description = "Go Magic Desktop App - Tauri"
 authors = ["Go Magic Team"]
 license = "MIT"
@@ -13,7 +13,6 @@ tauri-build = { version = "2.1", features = [] }
 
 [dependencies]
 tauri = { version = "2.1", features = ["devtools"] }
-tauri-plugin-shell = "2.1"
 tauri-plugin-fs = "2.1"
 tauri-plugin-os = "2.1"
 tauri-plugin-process = "2.1"

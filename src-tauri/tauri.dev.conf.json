@@ -35,8 +35,5 @@
     }
   },
   "plugins": {
-    "shell": {
-      "open": true
-    }
   }
 }
