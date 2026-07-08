@@ -1,6 +1,6 @@
 [package]
 name = "go-magic-desktop"
-version = "0.4.23"
+version = "0.5.0"
 description = "Go Magic Desktop App - Tauri"
 authors = ["Go Magic Team"]
 license = "MIT"
