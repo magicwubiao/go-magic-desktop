@@ -257,10 +257,40 @@ System Preferences → Security & Privacy → Allow anyway
 
 Using GitHub Actions for automated builds:
 
-- **lint**: Code quality check
-- **build-desktop**: Multi-platform desktop app build
-- **build-go-cli**: Go CLI multi-platform build
-- **create-release**: Automated release
+- **build**: Multi-platform desktop app build (Windows/macOS/Linux)
+- **release**: Automated GitHub Release on tag push
+
+## Versioning
+
+Versions are derived **entirely from git tags** — no version field in any config
+file is maintained manually. `package.json`, `Cargo.toml`, and `tauri.conf.json`
+all keep a placeholder `0.0.0`.
+
+At build time, `build.rs` runs `git describe --tags` to embed the real version
+(plus git commit, build time, build profile) into the binary. On CI tag pushes,
+the tag version is also injected into `tauri.conf.json` so the installer package
+carries the correct version.
+
+### Release Flow
+
+```bash
+# Just tag and push — that's it
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+CI then automatically builds for Windows, macOS (x64 + arm64), Linux, and
+creates a GitHub Release with checksums.
+
+### Local Builds
+
+Local builds without a tag produce version `0.0.0-dev`. To build with a
+specific version locally, create a tag first:
+
+```bash
+git tag v0.5.1
+npm run build
+```
 
 ## License
 

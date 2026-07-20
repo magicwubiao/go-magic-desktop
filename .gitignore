@@ -3,8 +3,12 @@ node_modules/
 
 # Build outputs
 dist/
+web-dist/
 src-tauri/target/
 src-tauri/gen/
+
+# Generated version info (created by package-source.sh)
+VERSION.txt
 
 # IDE
 .idea/

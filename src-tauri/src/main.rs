@@ -546,7 +546,11 @@ fn get_app_info() -> serde_json::Value {
         "name": env!("CARGO_PKG_NAME"),
         "version": env!("APP_VERSION"),
         "description": env!("CARGO_PKG_DESCRIPTION"),
-        "mode": "process-isolated"
+        "mode": "process-isolated",
+        "git_commit": option_env!("GIT_COMMIT").unwrap_or(""),
+        "git_branch": option_env!("GIT_BRANCH").unwrap_or(""),
+        "build_time": option_env!("BUILD_TIME").unwrap_or(""),
+        "build_profile": option_env!("BUILD_PROFILE").unwrap_or(""),
     })
 }
 
@@ -567,6 +571,15 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 // ============================================================================
 
 fn main() {
+    log::info!(
+        "Starting {} v{} (commit: {}, built: {}, profile: {})",
+        env!("CARGO_PKG_NAME"),
+        env!("APP_VERSION"),
+        option_env!("GIT_COMMIT").unwrap_or("unknown"),
+        option_env!("BUILD_TIME").unwrap_or("unknown"),
+        option_env!("BUILD_PROFILE").unwrap_or("unknown"),
+    );
+
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_os::init())

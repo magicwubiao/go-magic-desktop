@@ -1,16 +1,15 @@
 {
   "name": "go-magic-desktop",
-  "version": "0.5.0",
+  "version": "0.0.0",
   "description": "Go Magic Desktop App - Powered by Tauri",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "node sync-version.mjs && tauri build",
-    "build:windows": "node sync-version.mjs && tauri build --target x86_64-pc-windows-msvc",
-    "build:macos": "node sync-version.mjs && tauri build --target x86_64-apple-darwin",
-    "build:linux": "node sync-version.mjs && tauri build --target x86_64-unknown-linux-gnu",
-    "version": "node sync-version.mjs"
+    "build": "tauri build",
+    "build:windows": "tauri build --target x86_64-pc-windows-msvc",
+    "build:macos": "tauri build --target x86_64-apple-darwin",
+    "build:linux": "tauri build --target x86_64-unknown-linux-gnu"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0"
