@@ -571,7 +571,7 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
 // ============================================================================
 
 fn main() {
-    log::info!(
+    eprintln!(
         "Starting {} v{} (commit: {}, built: {}, profile: {})",
         env!("CARGO_PKG_NAME"),
         env!("APP_VERSION"),

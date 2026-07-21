@@ -28,12 +28,16 @@ mkdir -p "${PKG_NAME}"
 
 rsync -av \
     --exclude='.git' \
+    --exclude='.coze' \
     --exclude='go-magic' \
     --exclude='target' \
     --exclude='node_modules' \
     --exclude='src-tauri/target' \
+    --exclude='src-tauri/gen' \
     --exclude='*.tar.gz' \
     --exclude='*.zip' \
+    --exclude='*-checksums.txt' \
+    --exclude='VERSION.txt' \
     --exclude="${PKG_NAME}" \
     ./ "${PKG_NAME}/" > /dev/null
 
