@@ -70,7 +70,7 @@ go-magic-desktop/
    npm install -g @tauri-apps/cli
    ```
 
-4. **Go** (1.21+) - For building backend
+4. **Go** (1.26+) - For building backend
    ```bash
    go install golang.org/dl/go1.21@latest
    ```
