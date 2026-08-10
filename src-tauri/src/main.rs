@@ -99,7 +99,7 @@ fn save_window_state(app_handle: &AppHandle) {
 
     let (width, height) = match window.inner_size() {
         Ok(size) => {
-            let logical = size.to_logical(scale_factor);
+            let logical: tauri::LogicalSize<u32> = size.to_logical(scale_factor);
             (logical.width as f64, logical.height as f64)
         }
         Err(_) => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
@@ -107,7 +107,7 @@ fn save_window_state(app_handle: &AppHandle) {
 
     let (x, y) = match window.outer_position() {
         Ok(pos) => {
-            let logical = pos.to_logical(scale_factor);
+            let logical: tauri::LogicalPosition<i32> = pos.to_logical(scale_factor);
             (Some(logical.x as f64), Some(logical.y as f64))
         }
         Err(_) => (None, None),
