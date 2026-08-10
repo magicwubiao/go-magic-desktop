@@ -58,11 +58,12 @@ fn adjust_position_for_screen(
     app_handle: &AppHandle,
 ) -> (f64, f64) {
     if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+        let scale = monitor.scale_factor();
         let wa = monitor.work_area();
-        let screen_x = wa.position.x as f64;
-        let screen_y = wa.position.y as f64;
-        let screen_width = wa.size.width as f64;
-        let screen_height = wa.size.height as f64;
+        let screen_x = wa.position.x as f64 / scale;
+        let screen_y = wa.position.y as f64 / scale;
+        let screen_width = wa.size.width as f64 / scale;
+        let screen_height = wa.size.height as f64 / scale;
 
         let mut new_x = x;
         let mut new_y = y;
@@ -94,13 +95,21 @@ fn save_window_state(app_handle: &AppHandle) {
         return;
     };
 
+    let scale_factor = window.scale_factor().unwrap_or(1.0);
+
     let (width, height) = match window.inner_size() {
-        Ok(size) => (size.width as f64, size.height as f64),
+        Ok(size) => {
+            let logical: tauri::LogicalSize<u32> = size.to_logical(scale_factor);
+            (logical.width as f64, logical.height as f64)
+        }
         Err(_) => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
     };
 
     let (x, y) = match window.outer_position() {
-        Ok(pos) => (Some(pos.x as f64), Some(pos.y as f64)),
+        Ok(pos) => {
+            let logical: tauri::LogicalPosition<i32> = pos.to_logical(scale_factor);
+            (Some(logical.x as f64), Some(logical.y as f64))
+        }
         Err(_) => (None, None),
     };
 
@@ -641,11 +650,12 @@ fn main() {
                         _ => {
                             // 基于屏幕尺寸居中
                             if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+                                let scale = monitor.scale_factor();
                                 let wa = monitor.work_area();
-                                let screen_width = wa.size.width as f64;
-                                let screen_height = wa.size.height as f64;
-                                let screen_x = wa.position.x as f64;
-                                let screen_y = wa.position.y as f64;
+                                let screen_width = wa.size.width as f64 / scale;
+                                let screen_height = wa.size.height as f64 / scale;
+                                let screen_x = wa.position.x as f64 / scale;
+                                let screen_y = wa.position.y as f64 / scale;
                                 (
                                     screen_x + (screen_width - window_state.width) / 2.0,
                                     screen_y + (screen_height - window_state.height) / 2.0,
