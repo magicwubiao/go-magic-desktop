@@ -53,3 +53,4 @@ go-magic-desktop/
 - Go 后端二进制需要预先编译并放入 `src-tauri/resources/` 目录
 - 开发时需要同时具备 Rust、Node.js、Go 三个运行时
 - Linux 构建需要系统安装 `libwebkit2gtk-4.1-dev libssl3 libgtk-3-dev`
+- 窗口状态管理统一使用逻辑像素（`to_logical(scale_factor)`），避免 Windows 高 DPI 缩放导致窗口位置/大小偏移
