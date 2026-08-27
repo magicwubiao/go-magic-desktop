@@ -21,6 +21,9 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 │  ✓ Shared backend between CLI and desktop                  │
 │  ✓ No modifications to go-magic source code                │
 │  ✓ Easy version upgrades by replacing binary               │
+│  ✓ Window state persistence (position & size)              │
+│  ✓ High-DPI aware window positioning                      │
+│  ✓ External links open in system browser                   │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -35,6 +38,11 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 - **Embedded Backend**: Go Magic backend auto-starts and manages
 - **Auto Port Selection**: Smart port selection to avoid conflicts
 - **Health Check**: 60-second timeout for backend readiness detection
+- **Window State Persistence**: Remembers window position and size across sessions
+- **High-DPI Support**: Correct window positioning and sizing under display scaling
+- **External Link Handling**: Opens non-local links in the system browser automatically
+- **Backend Restart**: Restart backend from the UI without closing the app
+- **App Info Query**: Retrieve version, git commit, and build metadata at runtime
 - **Logging System**: Structured logging for troubleshooting
 - **Security Policy**: CSP protection, permission control
 
@@ -177,6 +185,15 @@ The Tauri app automatically handles:
 
 Auto-select available port: 5000 → 5001 → 5002 → 5003 → 5004 → 8080 → 3000
 
+### Tauri Commands
+
+| Command | Description |
+|---------|-------------|
+| `get_backend_port` | Get the port the backend is running on |
+| `restart_backend_cmd` | Restart the backend process |
+| `get_app_info` | Get app version, git commit, build time, and profile |
+| `check_backend_health_cmd` | Check if the backend is healthy |
+
 ## Configuration
 
 ### Tauri Configuration
@@ -257,8 +274,8 @@ System Preferences → Security & Privacy → Allow anyway
 
 Using GitHub Actions for automated builds:
 
-- **build**: Multi-platform desktop app build (Windows/macOS/Linux)
-- **release**: Automated GitHub Release on tag push
+- **build**: Multi-platform desktop app build (Windows/macOS-x64/macOS-arm64/Linux)
+- **release**: Automated GitHub Release with checksums on tag push
 
 ## Versioning
 
