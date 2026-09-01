@@ -46,6 +46,52 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 - **Logging System**: Structured logging for troubleshooting
 - **Security Policy**: CSP protection, permission control
 
+## Usage
+
+### Quick Start
+
+1. **Download & Install** — Get the installer for your platform from the [Releases](https://github.com/magicwubiao/go-magic-desktop/releases) page:
+   - Windows: `.exe` (NSIS) or `.msi`
+   - macOS: `.dmg` (Intel & Apple Silicon)
+   - Linux: `.AppImage` or `.deb`
+
+2. **Launch** — Open the app (the window is titled **"Go Magic"**). The desktop app automatically:
+   - locates the bundled `go-magic` backend executable,
+   - picks an available port (default `5000`, falling back to `5001` / `5002` / … / `3000`),
+   - starts the backend and waits up to 60 seconds for it to pass a health check,
+   - loads the Go Magic web UI inside the window.
+
+3. **Use the app** — Everything runs inside the window. This is the standard Go Magic web interface; no extra setup is required.
+
+### Backend Management
+
+- The backend process is **managed automatically**. It starts with the app and is terminated when you close the window.
+- **Restart from the UI**: if the backend becomes unresponsive, trigger the in-app restart action (calls `restart_backend_cmd`) — no need to quit the app.
+- **App info**: version, git commit, and build metadata are queryable at runtime via `get_app_info`.
+
+### Links & Navigation
+
+- Links to `127.0.0.1` / `localhost` open inside the app.
+- Any **external link** is automatically opened in your **system default browser**.
+
+### Window & Layout
+
+- Default window size is 1024×800 (minimum 800×600).
+- Window position and size are **persisted across sessions**; the app restores them on the next launch and adapts to Hi-DPI displays.
+
+### Exiting
+
+- Closing the window quits the app. The app saves the window state and gracefully stops the backend process.
+
+### Logs & Troubleshooting
+
+Log locations:
+- **Windows**: `%APPDATA%/go-magic-desktop/logs/`
+- **macOS**: `~/Library/Logs/go-magic-desktop/`
+- **Linux**: `~/.local/share/go-magic-desktop/logs/`
+
+If the app fails to start, see [FAQ](#faq) below.
+
 ## Project Structure
 
 ```
