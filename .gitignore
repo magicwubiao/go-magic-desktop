@@ -20,6 +20,9 @@ VERSION.txt
 .DS_Store
 Thumbs.db
 
+# WorkBuddy
+.workbuddy/
+
 # Logs
 *.log
 npm-debug.log*
