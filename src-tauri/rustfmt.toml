@@ -1,0 +1,3 @@
+# Keep formatting deterministic across developer machines and CI.
+edition = "2021"
+max_width = 100

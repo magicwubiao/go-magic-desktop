@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Least-privilege capability for the main window. The Go Magic UI is served by the bundled Go backend over http://127.0.0.1:<port>, which Tauri treats as *remote* content, so this local-only capability intentionally grants the UI no access to Tauri commands. If the UI ever needs IPC from that origin, add an explicit `remote` capability instead of loosening this one.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

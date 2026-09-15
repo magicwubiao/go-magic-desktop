@@ -9,19 +9,19 @@
     "build": "tauri build",
     "build:windows": "tauri build --target x86_64-pc-windows-msvc",
     "build:macos": "tauri build --target x86_64-apple-darwin",
-    "build:linux": "tauri build --target x86_64-unknown-linux-gnu"
+    "build:macos-arm": "tauri build --target aarch64-apple-darwin",
+    "build:linux": "tauri build --target x86_64-unknown-linux-gnu",
+    "version:sync": "node scripts/sync-version.mjs",
+    "fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.0",
-    "@tauri-apps/plugin-shell": "^2.1.0",
-    "@tauri-apps/plugin-fs": "^2.1.0",
-    "@tauri-apps/plugin-os": "^2.1.0",
-    "@tauri-apps/plugin-process": "^2.1.0",
     "@tauri-apps/plugin-dialog": "^2.1.0",
-    "@tauri-apps/plugin-http": "^2.1.0",
     "@tauri-apps/plugin-log": "^2.1.0"
   },
   "engines": {

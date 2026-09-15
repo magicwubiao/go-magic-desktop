@@ -4,31 +4,45 @@ version = "0.0.0"
 description = "Go Magic Desktop App - Tauri"
 authors = ["Go Magic Team"]
 license = "MIT"
-repository = ""
+repository = "https://github.com/magicwubiao/go-magic-desktop"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.77.2"
 
 [build-dependencies]
 tauri-build = { version = "2.1", features = [] }
 
 [dependencies]
-tauri = { version = "2.1", features = ["devtools"] }
-tauri-plugin-fs = "2.1"
-tauri-plugin-os = "2.1"
-tauri-plugin-process = "2.1"
+# NOTE: the `devtools` feature is deliberately *not* enabled here so that
+# release builds cannot open a webview inspector. Opt in for local debugging
+# with `cargo build --features devtools`.
+tauri = { version = "2.1" }
 tauri-plugin-log = "2.1"
 tauri-plugin-dialog = "2.1"
-tauri-plugin-http = "2.1"
+
+# `tauri-plugin-log` needs the `log` facade; it is the same version tauri uses,
+# so this does not add a second copy to the dependency graph.
+log = "0.4"
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls"] }
-chrono = "0.4"
+
+# No HTTP client of our own: the only request this shell makes is a plain-HTTP
+# `GET /health` against 127.0.0.1, which `check_backend_health` performs on a raw
+# socket. (tauri only pulls reqwest/hyper in for non-desktop targets, and no TLS
+# crate — openssl, native-tls, rustls, ring — appears anywhere in the dependency
+# graph or the lock file: no C toolchain, no TLS surface.)
 open = "5"
-time = "=0.3.36"
+
+[features]
+default = []
+# Makes the webview inspector exist *and* open automatically in release builds.
+# Debug builds already have devtools (see `cfg(any(debug_assertions, feature =
+# "devtools"))` in main.rs), so only opt in here to debug a packaged build.
+devtools = ["tauri/devtools"]
 
 [profile.release]
 lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+opt-level = "s"

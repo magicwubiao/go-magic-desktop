@@ -37,14 +37,17 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 - **Cross-Platform**: Windows, macOS, Linux
 - **Embedded Backend**: Go Magic backend auto-starts and manages
 - **Auto Port Selection**: Smart port selection to avoid conflicts
-- **Health Check**: 60-second timeout for backend readiness detection
+- **Instant Window**: the window appears immediately — the backend health check runs on a background thread instead of blocking startup for up to 60s
+- **Health Check**: 60-second budget for backend readiness detection, with throttled `backend-status` progress events
+- **Reliable Process Management**: backend stdout/stderr is drained continuously (no pipe deadlock), the child is reaped on exit, and the whole process tree is killed on Windows
 - **Window State Persistence**: Remembers window position and size across sessions
 - **High-DPI Support**: Correct window positioning and sizing under display scaling
-- **External Link Handling**: Opens non-local links in the system browser automatically
-- **Backend Restart**: Restart backend from the UI without closing the app
-- **App Info Query**: Retrieve version, git commit, and build metadata at runtime
-- **Logging System**: Structured logging for troubleshooting
-- **Security Policy**: CSP protection, permission control
+- **External Link Handling**: Opens non-local links in the system browser automatically (http/https only)
+- **Backend Restart**: Restart the backend from the UI without closing the app and without blocking the UI thread
+- **App Info Query**: Retrieve version, git commit, git branch, and build metadata at runtime
+- **Logging System**: Structured logging to stdout **and** a log file, covering both the shell and the backend
+- **Security Hardened**: least-privilege capabilities, strict CSP, no TLS stack linked into the binary, no webview devtools in release builds
+- **Tested**: unit tests for the pure helpers, `cargo fmt --check` enforced in CI, clippy still advisory
 
 ## Usage
 
@@ -58,8 +61,8 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 2. **Launch** — Open the app (the window is titled **"Go Magic"**). The desktop app automatically:
    - locates the bundled `go-magic` backend executable,
    - picks an available port (default `5000`, falling back to `5001` / `5002` / … / `3000`),
-   - starts the backend and waits up to 60 seconds for it to pass a health check,
-   - loads the Go Magic web UI inside the window.
+   - shows the window right away while it starts the backend and waits up to 60 seconds for it to pass a health check,
+   - loads the Go Magic web UI inside the window as soon as the backend answers.
 
 3. **Use the app** — Everything runs inside the window. This is the standard Go Magic web interface; no extra setup is required.
 
@@ -96,23 +99,24 @@ If the app fails to start, see [FAQ](#faq) below.
 
 ```
 go-magic-desktop/
-├── src-tauri/          # Rust backend code
-│   ├── src/
-│   │   └── main.rs     # Main entry point
-│   ├── Cargo.toml      # Rust dependencies
-│   ├── tauri.conf.json # Tauri configuration
-│   └── resources/      # Packaging resources
-├── icons/              # Application icons
-├── build-all.sh        # Multi-platform build script
-├── build-windows.ps1   # Windows build script
-└── package.json        # Node.js configuration
+├── src-tauri/                  # Rust shell + backend supervision
+│   ├── src/main.rs             # Main entry point (process management, window)
+│   ├── build.rs                # Embeds version/commit/build-time metadata
+│   ├── Cargo.toml              # Rust dependencies
+│   ├── tauri.conf.json         # Tauri configuration (window, CSP, bundling)
+│   ├── capabilities/           # Least-privilege permission sets
+│   ├── icons/                  # Application icons
+│   └── resources/              # Bundled backend binary (populated at build time)
+├── scripts/sync-version.mjs    # Stamps the git tag into all version fields
+├── .github/workflows/build.yml # Multi-platform CI + release
+└── package.json                # Node.js configuration
 ```
 
 ## Prerequisites
 
 ### Required Software
 
-1. **Rust** (1.75+)
+1. **Rust** (1.77.2+)
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
@@ -124,9 +128,9 @@ go-magic-desktop/
    npm install -g @tauri-apps/cli
    ```
 
-4. **Go** (1.26+) - For building backend
+4. **Go** (1.22+) — for building the backend
    ```bash
-   go install golang.org/dl/go1.21@latest
+   # https://go.dev/dl/
    ```
 
 ### System Dependencies
@@ -135,8 +139,11 @@ go-magic-desktop/
 - **macOS**: Xcode Command Line Tools
 - **Linux**:
   ```bash
-  sudo apt install libwebkit2gtk-4.1-dev libssl3 libgtk-3-dev
+  sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf
   ```
+  No OpenSSL development package is needed: neither the shell nor the Tauri crates
+  it depends on link a TLS backend, so `openssl-sys`, `native-tls` and `rustls`
+  never enter the build.
 
 ## Development
 
@@ -160,6 +167,19 @@ cd ../go-magic && go build -o ../go-magic-desktop/src-tauri/resources/go-magic .
 npm run dev
 ```
 
+### Tests, formatting and linting
+
+```bash
+npm test               # cargo test — unit tests for the pure helpers
+npm run fmt            # cargo fmt
+npm run clippy         # cargo clippy --all-targets -- -D warnings
+npm run version:sync   # stamp the current git tag into package.json / Cargo.toml / tauri.conf.json
+```
+
+CI enforces `cargo fmt --check` in a dedicated lint job; `cargo clippy` runs in
+advisory mode — drop `continue-on-error` in `.github/workflows/build.yml` once the
+tree is clippy-clean.
+
 ## Building
 
 ### Quick Build
@@ -168,8 +188,8 @@ npm run dev
 # Build frontend and package desktop app
 npm run build
 
-# Or use build script
-./build-all.sh
+# Or build for a specific platform
+npm run build:linux
 ```
 
 ### Step-by-Step Build
@@ -187,22 +207,17 @@ cd ../go-magic-desktop && tauri build
 
 ### Multi-Platform Build
 
+Cross-compiling a Tauri app is impractical, so each platform is built on its own
+runner (or machine) through the npm scripts:
+
 ```bash
-# All platforms
-./build-all.sh all
-
-# Windows
-./build-all.sh windows
-
-# macOS (Intel)
-./build-all.sh macos
-
-# macOS (Apple Silicon)
-./build-all.sh macos-arm
-
-# Linux
-./build-all.sh linux
+npm run build:windows    # x86_64-pc-windows-msvc
+npm run build:macos      # x86_64-apple-darwin
+npm run build:macos-arm  # aarch64-apple-darwin
+npm run build:linux      # x86_64-unknown-linux-gnu
 ```
+
+CI does the same for all four targets — just push a tag.
 
 ## Build Output
 
@@ -222,7 +237,7 @@ The Tauri app automatically handles:
 
 1. **Backend Detection**: Find go-magic executable in resources directory
 2. **Backend Startup**: Auto-start `go-magic server --port <PORT>`
-3. **Health Check**: Wait for backend readiness (60s timeout)
+3. **Health Check**: Wait for backend readiness (60s budget, then show an error and exit)
 4. **UI Loading**: WebView loads `http://127.0.0.1:<PORT>/`
 5. **Window Management**: Show main window and focus
 6. **Graceful Shutdown**: Terminate backend process on window close
@@ -253,8 +268,12 @@ Modify `tauri.conf.json` to adjust:
 
 | Variable | Description |
 |----------|-------------|
-| `GOMAGIC_PORT` | Backend listening port |
-| `RUST_BACKTRACE` | Rust stack trace level |
+| `GOMAGIC_PORT` | Backend listening port (also passed as `--port`) |
+| `RUST_BACKTRACE` | Set to `1` for the backend in **debug** builds only |
+
+Bundle-time metadata (`APP_VERSION`, `GIT_COMMIT`, `GIT_BRANCH`, `BUILD_TIME`,
+`BUILD_PROFILE`) is injected by `src-tauri/build.rs` and surfaced through
+`get_app_info`.
 
 ## Architecture
 
@@ -283,9 +302,26 @@ Modify `tauri.conf.json` to adjust:
 
 ### Security Policy
 
-- **CSP**: Restrict script sources and connection targets
-- **Port Binding**: Only allow localhost access
-- **Permission Control**: Only allow necessary system operations
+- **CSP**: script/style/connect targets are restricted to the app itself and the
+  local backend, plus `object-src 'none'`, `base-uri 'self'` and
+  `frame-ancestors 'none'`. `'unsafe-eval'` is not allowed; `'unsafe-inline'` is
+  still required by the bundled UI's inline script/style, and `img-src`
+  additionally allows `https:` and `data:` images.
+- **Port Binding**: the backend only ever binds `127.0.0.1`.
+- **Permissions**: `src-tauri/capabilities/default.json` grants only
+  `core:default`, and only to local content. The Go Magic UI is served by the
+  bundled backend over `http://127.0.0.1:<port>`, which Tauri classifies as
+  *remote* content — so the UI deliberately gets **no** access to Tauri commands
+  or plugins. If the UI ever needs IPC from that origin, add an explicit `remote`
+  capability rather than widening the default one.
+- **No devtools in release**: the `devtools` cargo feature is off by default and
+  the window builder disables devtools when `debug_assertions` is off.
+- **TLS**: the shell brings no HTTP client of its own — its only request
+  (`GET /health` on `127.0.0.1`) goes over a raw socket. `Cargo.lock` carries no
+  TLS crate at all (`openssl`, `native-tls`, `rustls` and `ring` are all absent),
+  and the desktop build pulls in neither `reqwest` nor `hyper`: tauri only needs
+  them for non-desktop targets.
+- **External links**: only `http`/`https` URLs are handed to the OS.
 
 ## Logs
 
@@ -320,8 +356,20 @@ System Preferences → Security & Privacy → Allow anyway
 
 Using GitHub Actions for automated builds:
 
-- **build**: Multi-platform desktop app build (Windows/macOS-x64/macOS-arm64/Linux)
-- **release**: Automated GitHub Release with checksums on tag push
+- **lint**: `cargo fmt --check` over the whole tree (blocking)
+- **build**: multi-platform build (Windows / macOS-x64 / macOS-arm64 / Linux) with
+  npm + cargo caching, unit tests and advisory clippy on the Linux leg, and a hard
+  failure when a leg produces no installer
+- **release**: automated GitHub Release with checksums on tag push
+
+The backend is built from `magicwubiao/go-magic` at `GO_MAGIC_REF` (workflow input
+or repository variable, default `main`) — pin it to a tag or commit SHA for
+reproducible builds.
+
+macOS builds are signed and notarized automatically when the `APPLE_CERTIFICATE`,
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`,
+`APPLE_PASSWORD` and `APPLE_TEAM_ID` secrets exist, and are skipped silently when
+they do not.
 
 ## Versioning
 
@@ -330,9 +378,10 @@ file is maintained manually. `package.json`, `Cargo.toml`, and `tauri.conf.json`
 all keep a placeholder `0.0.0`.
 
 At build time, `build.rs` runs `git describe --tags` to embed the real version
-(plus git commit, build time, build profile) into the binary. On CI tag pushes,
-the tag version is also injected into `tauri.conf.json` so the installer package
-carries the correct version.
+(plus git commit, branch, build time and build profile) into the binary. On tag
+pushes, CI runs `scripts/sync-version.mjs <tag>` to stamp the same version into
+`package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`, so the
+installer package carries it as well. Run the same script locally to preview it.
 
 ### Release Flow
 
