@@ -32,6 +32,15 @@ struct WindowState {
     height: f64,
     x: Option<f64>,
     y: Option<f64>,
+    /// Whether the window was maximized when the app was last closed.
+    ///
+    /// `width`/`height` deliberately stay pinned to the *restored* (pre-maximize)
+    /// size, because a maximized window reports the monitor's size and restoring
+    /// that as a plain window would leave it a few pixels short of the screen
+    /// (the frame border) — which is exactly the "nearly full screen but
+    /// offset" bug. `serde(default)` keeps older state files loading.
+    #[serde(default)]
+    maximized: bool,
 }
 
 impl Default for WindowState {
@@ -41,6 +50,7 @@ impl Default for WindowState {
             height: DEFAULT_WINDOW_HEIGHT,
             x: None,
             y: None,
+            maximized: false,
         }
     }
 }
@@ -109,6 +119,21 @@ fn save_window_state(app_handle: &AppHandle) {
         return;
     };
 
+    // A maximized (or fullscreen) window reports the monitor's size in both
+    // `inner_size` and `outer_position`, so persisting those would destroy the
+    // restore geometry. Keep the previous size instead and only record the
+    // `maximized` flag — that is what makes "maximize → close → reopen" land
+    // exactly on the monitor again instead of a few pixels off.
+    let maximized = window.is_maximized().unwrap_or(false);
+    let fullscreen = window.is_fullscreen().unwrap_or(false);
+
+    if maximized || fullscreen {
+        let mut state = load_window_state(app_handle);
+        state.maximized = maximized || fullscreen;
+        write_window_state(&path, &state);
+        return;
+    }
+
     let scale_factor = window.scale_factor().unwrap_or(1.0);
 
     let (width, height) = match window.inner_size() {
@@ -132,13 +157,18 @@ fn save_window_state(app_handle: &AppHandle) {
         height: height.round(),
         x: x.map(|v| v.round()),
         y: y.map(|v| v.round()),
+        maximized: false,
     };
 
-    if let Ok(json) = serde_json::to_string_pretty(&state) {
+    write_window_state(&path, &state);
+}
+
+fn write_window_state(path: &Path, state: &WindowState) {
+    if let Ok(json) = serde_json::to_string_pretty(state) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Err(e) = std::fs::write(&path, &json) {
+        if let Err(e) = std::fs::write(path, &json) {
             eprintln!("Failed to save window state: {}", e);
         }
     }
@@ -873,6 +903,18 @@ fn main() {
                 window.open_devtools();
             }
 
+            // Re-apply the maximized flag that was saved with the window state.
+            // Doing it after `build()` rather than through the builder avoids the
+            // "restore a monitor-sized plain window" trap: the window manager
+            // recomputes the frame itself, so the window really does fill the
+            // screen instead of landing a few pixels off.
+            if window_state.maximized {
+                #[cfg(debug_assertions)]
+                println!("Restoring maximized window");
+
+                let _ = window.maximize();
+            }
+
             let _ = window.set_focus();
 
             // Wait for the backend off the UI thread, then make sure the window
@@ -954,6 +996,65 @@ mod tests {
         assert_eq!(state.height, DEFAULT_WINDOW_HEIGHT);
         assert!(state.x.is_none());
         assert!(state.y.is_none());
+        assert!(!state.maximized);
+    }
+
+    #[test]
+    fn window_state_without_a_maximized_field_still_loads() {
+        // State files written before the `maximized` flag existed must keep
+        // working; a hard parse error would silently reset the user's geometry.
+        let legacy = r#"{"width":1280,"height":900,"x":100,"y":80}"#;
+        let state: WindowState = serde_json::from_str(legacy).unwrap();
+
+        assert_eq!(state.width, 1280.0);
+        assert_eq!(state.height, 900.0);
+        assert_eq!(state.x, Some(100.0));
+        assert_eq!(state.y, Some(80.0));
+        assert!(!state.maximized);
+    }
+
+    #[test]
+    fn window_state_survives_a_json_round_trip() {
+        let original = WindowState {
+            width: 1280.0,
+            height: 900.0,
+            x: Some(12.0),
+            y: Some(-34.0),
+            maximized: true,
+        };
+
+        let json = serde_json::to_string(&original).unwrap();
+        let restored: WindowState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.width, original.width);
+        assert_eq!(restored.height, original.height);
+        assert_eq!(restored.x, original.x);
+        assert_eq!(restored.y, original.y);
+        assert!(restored.maximized);
+    }
+
+    /// The restore geometry must be the *plain* window size, never the monitor
+    /// size a maximized window would report. Turning a monitor-sized rectangle
+    /// into a normal window is what leaves the frame border hanging off-screen.
+    #[test]
+    fn a_maximized_window_keeps_its_pre_maximize_geometry() {
+        let mut state = WindowState {
+            width: 1280.0,
+            height: 900.0,
+            x: Some(100.0),
+            y: Some(80.0),
+            maximized: false,
+        };
+
+        // What `save_window_state` does when it sees `is_maximized() == true`:
+        // only the flag flips, the geometry is left untouched.
+        state.maximized = true;
+
+        assert_eq!(state.width, 1280.0);
+        assert_eq!(state.height, 900.0);
+        assert_eq!(state.x, Some(100.0));
+        assert_eq!(state.y, Some(80.0));
+        assert!(state.maximized);
     }
 
     #[test]
@@ -985,24 +1086,6 @@ mod tests {
         });
         assert_eq!(large.width, 4000.0);
         assert_eq!(large.height, 3000.0);
-    }
-
-    #[test]
-    fn window_state_survives_a_json_round_trip() {
-        let original = WindowState {
-            width: 1280.0,
-            height: 900.0,
-            x: Some(12.0),
-            y: Some(-34.0),
-        };
-
-        let json = serde_json::to_string(&original).unwrap();
-        let restored: WindowState = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(restored.width, original.width);
-        assert_eq!(restored.height, original.height);
-        assert_eq!(restored.x, original.x);
-        assert_eq!(restored.y, original.y);
     }
 
     #[test]

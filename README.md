@@ -21,7 +21,7 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 │  ✓ Shared backend between CLI and desktop                  │
 │  ✓ No modifications to go-magic source code                │
 │  ✓ Easy version upgrades by replacing binary               │
-│  ✓ Window state persistence (position & size)              │
+│  ✓ Window state persistence (position, size, maximized)    │
 │  ✓ High-DPI aware window positioning                      │
 │  ✓ External links open in system browser                   │
 └────────────────────────────────────────────────────────────┘
@@ -40,7 +40,7 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 - **Instant Window**: the window appears immediately — the backend health check runs on a background thread instead of blocking startup for up to 60s
 - **Health Check**: 60-second budget for backend readiness detection, with throttled `backend-status` progress events
 - **Reliable Process Management**: backend stdout/stderr is drained continuously (no pipe deadlock), the child is reaped on exit, and the whole process tree is killed on Windows
-- **Window State Persistence**: Remembers window position and size across sessions
+- **Window State Persistence**: Remembers window position, size and maximized state across sessions
 - **High-DPI Support**: Correct window positioning and sizing under display scaling
 - **External Link Handling**: Opens non-local links in the system browser automatically (http/https only)
 - **Backend Restart**: Restart the backend from the UI without closing the app and without blocking the UI thread
@@ -81,6 +81,7 @@ Tauri desktop application that packages Go Magic as a cross-platform desktop app
 
 - Default window size is 1024×800 (minimum 800×600).
 - Window position and size are **persisted across sessions**; the app restores them on the next launch and adapts to Hi-DPI displays.
+- A **maximized** window is restored as maximized: only the flag is remembered, while the underlying size stays at the pre-maximize geometry. Persisting the maximized geometry instead would restore a monitor-sized *normal* window, which lands a few pixels short of the screen because of the frame border.
 
 ### Exiting
 
