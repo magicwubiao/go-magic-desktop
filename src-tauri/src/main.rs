@@ -859,6 +859,13 @@ fn main() {
             .focused(true)
             .resizable(true)
             .fullscreen(false)
+            .maximized(window_state.maximized)
+            // A maximized window is created *hidden* and revealed only once it has
+            // been maximized. Creating it visible and maximizing afterwards shows
+            // the window at its restored size for one frame before it snaps to the
+            // monitor, which reads as a flash. A plain window keeps the default
+            // `visible: true` and appears immediately, exactly as before.
+            .visible(!window_state.maximized)
             // Devtools are enabled in debug builds, and in release builds only
             // when the `devtools` cargo feature is opted into explicitly.
             .devtools(cfg!(any(debug_assertions, feature = "devtools")))
@@ -898,13 +905,8 @@ fn main() {
                 }
             };
 
-            #[cfg(any(debug_assertions, feature = "devtools"))]
-            {
-                window.open_devtools();
-            }
-
             // Re-apply the maximized flag that was saved with the window state.
-            // Doing it after `build()` rather than through the builder avoids the
+            // Doing it here rather than through the builder alone avoids the
             // "restore a monitor-sized plain window" trap: the window manager
             // recomputes the frame itself, so the window really does fill the
             // screen instead of landing a few pixels off.
@@ -912,9 +914,22 @@ fn main() {
                 #[cfg(debug_assertions)]
                 println!("Restoring maximized window");
 
+                // Idempotent: `.maximized()` on the builder has normally already
+                // done this, but repeating it covers platforms where that flag is
+                // applied after creation rather than by the window manager.
                 let _ = window.maximize();
+                // The window was created hidden, so this is the first frame the
+                // user ever sees — and it is already the final, maximized one.
+                let _ = window.show();
             }
 
+            #[cfg(any(debug_assertions, feature = "devtools"))]
+            {
+                window.open_devtools();
+            }
+
+            // Must come after `show()`: focus requests on a hidden window are
+            // ignored, and a maximized window only exists after the reveal above.
             let _ = window.set_focus();
 
             // Wait for the backend off the UI thread, then make sure the window
