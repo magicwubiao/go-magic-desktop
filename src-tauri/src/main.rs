@@ -197,6 +197,47 @@ fn load_window_state(app_handle: &AppHandle) -> WindowState {
     }
 }
 
+/// Reveals `window` on screen already maximized, in a single step.
+///
+/// tao maximizes a window that is not visible yet with `ShowWindow(SW_MAXIMIZE)`
+/// and then hides it again, which makes the window appear for an instant and
+/// vanish (see the comment on the window builder in `main`). Asking the window
+/// manager for `SW_SHOWMAXIMIZED` instead keeps the whole job in one call: the
+/// first frame that is ever composited is already the final, maximized one, and
+/// the window manager computes the frame and the monitor work area itself — so
+/// this does not reintroduce the "monitor-sized rectangle, a few pixels off"
+/// bug that persisting the maximized geometry used to cause.
+///
+/// Returns `false` when the native call could not be made, so the caller can
+/// fall back to tao's own `maximize()`.
+///
+/// Once the tauri in use ships with tao >= 0.37.0 this helper and the
+/// `cfg(not(windows))` split in `main` can both be dropped in favour of a plain
+/// `maximized(window_state.maximized)` on the builder.
+#[cfg(windows)]
+fn reveal_maximized<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    // `ShowWindow` command: activates the window and displays it maximized.
+    const SW_SHOWMAXIMIZED: i32 = 3;
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd_show: i32) -> i32;
+    }
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+
+    // SAFETY: `hwnd` is the handle of the window that was just created and is
+    // still alive here, and `ShowWindow` has no preconditions beyond the handle
+    // being valid.
+    unsafe {
+        ShowWindow(hwnd.0, SW_SHOWMAXIMIZED);
+    }
+
+    true
+}
+
 // ============================================================================
 // Constants Configuration
 // ============================================================================
@@ -847,7 +888,11 @@ fn main() {
                 },
             };
 
-            let window = match WebviewWindowBuilder::new(
+            // Whether the window has to come back maximized. The flag is applied
+            // below, once the window exists — see `reveal_maximized`.
+            let wants_maximize = window_state.maximized;
+
+            let builder = WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::External(backend_url.clone()),
@@ -859,13 +904,18 @@ fn main() {
             .focused(true)
             .resizable(true)
             .fullscreen(false)
-            .maximized(window_state.maximized)
-            // A maximized window is created *hidden* and revealed only once it has
-            // been maximized. Creating it visible and maximizing afterwards shows
-            // the window at its restored size for one frame before it snaps to the
-            // monitor, which reads as a flash. A plain window keeps the default
+            // A window that is about to be maximized is created *hidden*, and on
+            // Windows tao is never asked to maximize it: tao maximizes a hidden
+            // window with `ShowWindow(SW_MAXIMIZE)` and then hides it again right
+            // away, because its stored flags still say "hidden" (`apply_diff` ends
+            // with `ShowWindow(SW_HIDE)` whenever VISIBLE is unset). The window
+            // therefore shows up for an instant and vanishes — the "flashes and
+            // then disappears" of a maximized restore. tao 0.37.0 fixed that
+            // ordering (tao#1306), but every released tauri still pins tao
+            // `^0.35`, so we reveal the window ourselves instead, in a single step
+            // (`reveal_maximized` below). A plain window keeps the default
             // `visible: true` and appears immediately, exactly as before.
-            .visible(!window_state.maximized)
+            .visible(!wants_maximize)
             // Devtools are enabled in debug builds, and in release builds only
             // when the `devtools` cargo feature is opted into explicitly.
             .devtools(cfg!(any(debug_assertions, feature = "devtools")))
@@ -895,9 +945,16 @@ fn main() {
                     open_external_link(&app_handle_clone, url.as_str());
                     NewWindowResponse::Deny
                 }
-            })
-            .build()
-            {
+            });
+
+            // tao is only handed the maximized flag where its own ordering is
+            // safe. On Windows it is applied while the window is still hidden,
+            // which is precisely the flash described above; there the flag is
+            // applied by `reveal_maximized` after the window exists.
+            #[cfg(not(windows))]
+            let builder = builder.maximized(wants_maximize);
+
+            let window = match builder.build() {
                 Ok(w) => w,
                 Err(e) => {
                     eprintln!("Failed to create window: {}", e);
@@ -905,21 +962,35 @@ fn main() {
                 }
             };
 
-            // Re-apply the maximized flag that was saved with the window state.
-            // Doing it here rather than through the builder alone avoids the
+            // Restore the maximized state that was saved with the window state.
+            // Doing it here rather than through the builder also avoids the
             // "restore a monitor-sized plain window" trap: the window manager
             // recomputes the frame itself, so the window really does fill the
             // screen instead of landing a few pixels off.
-            if window_state.maximized {
+            if wants_maximize {
                 #[cfg(debug_assertions)]
                 println!("Restoring maximized window");
 
-                // Idempotent: `.maximized()` on the builder has normally already
-                // done this, but repeating it covers platforms where that flag is
-                // applied after creation rather than by the window manager.
-                let _ = window.maximize();
-                // The window was created hidden, so this is the first frame the
-                // user ever sees — and it is already the final, maximized one.
+                // Windows: reveal the window already maximized, in one step.
+                #[cfg(windows)]
+                let revealed = reveal_maximized(&window);
+                #[cfg(not(windows))]
+                let revealed = false;
+
+                if !revealed {
+                    // Fallback (and the path other platforms always take): let tao
+                    // maximize the hidden window, then reveal it. Whatever the
+                    // ordering costs on this platform, the first frame the user
+                    // sees is the final, maximized one.
+                    let _ = window.maximize();
+                }
+
+                // This is also what flips tao's internal VISIBLE flag. Without it
+                // tao still believes the window is hidden, and the next flag
+                // change would hide it for real (`apply_diff` ends with
+                // `ShowWindow(SW_HIDE)` whenever VISIBLE is unset). On the Windows
+                // path the window is already on screen and maximized, so this call
+                // only syncs tao's bookkeeping.
                 let _ = window.show();
             }
 
