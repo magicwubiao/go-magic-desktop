@@ -67,7 +67,7 @@ Go Magic Desktop 将 Go Magic Web 应用封装为原生、跨平台的桌面应�
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows | `.exe`（NSIS）· `.msi` |
+| Windows | `.exe`（NSIS）|
 | macOS | `.dmg`（Intel 与 Apple Silicon） |
 | Linux | `.AppImage` · `.deb` |
 
@@ -234,7 +234,6 @@ CI 对四个目标执行同样的流程，只需推送 tag。
 | 平台 | 位置 |
 | --- | --- |
 | Windows NSIS | `src-tauri/target/release/bundle/nsis/*.exe` |
-| Windows MSI | `src-tauri/target/release/bundle/msi/*.msi` |
 | macOS | `src-tauri/target/release/bundle/dmg/*.dmg` |
 | Linux AppImage | `src-tauri/target/release/bundle/appimage/*.AppImage` |
 | Linux DEB | `src-tauri/target/release/bundle/deb/*.deb` |

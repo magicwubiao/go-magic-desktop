@@ -69,7 +69,7 @@ Grab the installer for your platform from the
 
 | Platform | Installer |
 | --- | --- |
-| Windows | `.exe` (NSIS) · `.msi` |
+| Windows | `.exe` (NSIS) |
 | macOS | `.dmg` (Intel & Apple Silicon) |
 | Linux | `.AppImage` · `.deb` |
 
@@ -237,7 +237,6 @@ Installers land in:
 | Platform | Location |
 | --- | --- |
 | Windows NSIS | `src-tauri/target/release/bundle/nsis/*.exe` |
-| Windows MSI | `src-tauri/target/release/bundle/msi/*.msi` |
 | macOS | `src-tauri/target/release/bundle/dmg/*.dmg` |
 | Linux AppImage | `src-tauri/target/release/bundle/appimage/*.AppImage` |
 | Linux DEB | `src-tauri/target/release/bundle/deb/*.deb` |
