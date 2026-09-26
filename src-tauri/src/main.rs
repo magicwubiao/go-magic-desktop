@@ -919,6 +919,14 @@ fn main() {
             // Devtools are enabled in debug builds, and in release builds only
             // when the `devtools` cargo feature is opted into explicitly.
             .devtools(cfg!(any(debug_assertions, feature = "devtools")))
+            // Disable Tauri's native drag-drop handler. On Windows it installs
+            // its own IDropTarget on the webview's HWND, which swallows every
+            // drag before WebView2 can turn it into HTML5 events — so pages
+            // never see `dragover`/`drop` and HTML5 drag & drop (kanban cards,
+            // file-drop install zones) silently breaks in packaged builds while
+            // working in a browser. The frontend only uses HTML5 DnD and never
+            // the Tauri drag-drop API, so disabling the handler costs nothing.
+            .disable_drag_drop_handler()
             .on_navigation({
                 let app_handle_clone = app_handle.clone();
                 move |url| {
