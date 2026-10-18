@@ -6,11 +6,13 @@
 //! a child process, points a webview at `http://127.0.0.1:<port>` and shuts the
 //! backend down again when the window closes.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::webview::NewWindowResponse;
@@ -253,6 +255,19 @@ const MAX_STATUS_LINE_BYTES: usize = 1024;
 const BACKEND_STATUS_INTERVAL: Duration = Duration::from_secs(1);
 /// Grace period for the child process to die after being asked to terminate.
 const BACKEND_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the supervisor checks whether the backend is still running.
+const SUPERVISE_INTERVAL: Duration = Duration::from_secs(1);
+/// Consecutive automatic restart attempts before the supervisor gives up.
+///
+/// Reset as soon as the backend survives a full [`SUPERVISE_INTERVAL`], so a
+/// one-off crash hours into a session does not consume the whole budget.
+const MAX_BACKEND_RESTARTS: u32 = 5;
+/// First backoff step; doubled on every further failed attempt.
+const AUTO_RESTART_BASE_DELAY: Duration = Duration::from_secs(1);
+/// Ceiling for the exponential backoff.
+const AUTO_RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
+/// How many stderr lines are kept around to explain an unexpected exit.
+const BACKEND_STDERR_TAIL_LINES: usize = 20;
 
 // ============================================================================
 // Backend Process Management
@@ -265,6 +280,208 @@ struct BackendState {
 }
 
 static BACKEND_STATE: Mutex<Option<BackendState>> = Mutex::new(None);
+/// Incremented every time a new backend process is installed.
+///
+/// The startup health check uses it to tell "my backend never answered" from
+/// "the supervisor already replaced it", which need opposite reactions.
+static BACKEND_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Set once the app is going away. The supervisor must never resurrect a
+/// backend that was stopped on purpose.
+static BACKEND_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+/// Serialises manual and automatic restarts: two concurrent restarts would
+/// spawn two backends that then fight over the port and `sessions.db`.
+static RESTART_GUARD: Mutex<()> = Mutex::new(());
+/// Last stderr lines of the current child, kept so a crash can be explained.
+///
+/// The desktop log already carries everything via `tauri-plugin-log`, but a
+/// panic is printed once and then drowned by request logging; repeating the
+/// tail next to the exit status makes the cause impossible to miss.
+static BACKEND_STDERR_TAIL: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+
+// --------------------------------------------------------------------------
+// Process Bookkeeping
+// --------------------------------------------------------------------------
+
+/// Installs a freshly spawned backend, replacing whatever was registered before.
+fn install_backend(process: Child, port: u16) {
+    // A poisoned lock must not swallow the new child: dropping the guard would
+    // leak the freshly spawned process (std does not kill on drop) while the
+    // state still looked empty, and the supervisor would then restart forever.
+    let mut guard = match BACKEND_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    *guard = Some(BackendState {
+        process,
+        port,
+        start_time: Instant::now(),
+    });
+    drop(guard);
+
+    // Bumped only after the new child is in place, so a reader that observes a
+    // new generation also observes the matching process.
+    BACKEND_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+fn backend_generation() -> u64 {
+    BACKEND_GENERATION.load(Ordering::SeqCst)
+}
+
+/// True while the registered backend process is still running.
+///
+/// `Err` counts as running: an unreadable child is not evidence of a crash, and
+/// guessing "dead" here would make the app quit on a transient OS error.
+fn backend_child_running() -> bool {
+    let mut guard = match BACKEND_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    match guard.as_mut() {
+        Some(state) => !matches!(state.process.try_wait(), Ok(Some(_))),
+        None => false,
+    }
+}
+
+/// Describes an exit status in the terms that matter for a crash report:
+/// an exit code, or the signal that killed the process.
+///
+/// The signal is the useful half: `9` (SIGKILL) points at the OOM killer or a
+/// stray `kill -9`, `15` at a `SIGTERM` from a restart script, while a plain
+/// exit code `2` is Go's signature for an unrecovered panic.
+fn describe_exit_status(status: ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+
+        if let Some(signal) = status.signal() {
+            return format!("killed by signal {} ({})", signal, signal_name(signal));
+        }
+    }
+
+    match status.code() {
+        Some(code) => format!("exit code {}", code),
+        None => status.to_string(),
+    }
+}
+
+#[cfg(unix)]
+fn signal_name(signal: i32) -> &'static str {
+    match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        5 => "SIGTRAP",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        10 => "SIGUSR1",
+        11 => "SIGSEGV",
+        12 => "SIGUSR2",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        _ => "unknown signal",
+    }
+}
+
+/// Exponential backoff for automatic restarts: 1s, 2s, 4s, 8s, 16s, then 30s.
+fn restart_delay(attempt: u32) -> Duration {
+    // Cap the shift so a large attempt counter cannot overflow the multiplier.
+    let factor = 1u64 << attempt.min(5);
+    let millis = (AUTO_RESTART_BASE_DELAY.as_millis() as u64).saturating_mul(factor);
+
+    Duration::from_millis(millis).min(AUTO_RESTART_MAX_DELAY)
+}
+
+/// Sleeps for `total`, but returns `true` as soon as the app starts shutting
+/// down — a quit must not wait out a 30s backoff.
+fn sleep_unless_shutting_down(total: Duration) -> bool {
+    const SLICE: Duration = Duration::from_millis(250);
+
+    let deadline = Instant::now() + total;
+    while Instant::now() < deadline {
+        if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
+            return true;
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(SLICE.min(remaining));
+    }
+
+    BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst)
+}
+
+fn remember_stderr_line(line: &str) {
+    let mut tail = BACKEND_STDERR_TAIL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if tail.len() >= BACKEND_STDERR_TAIL_LINES {
+        tail.pop_front();
+    }
+    tail.push_back(line.to_string());
+}
+
+fn clear_stderr_tail() {
+    BACKEND_STDERR_TAIL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+fn backend_stderr_tail() -> Vec<String> {
+    BACKEND_STDERR_TAIL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .cloned()
+        .collect()
+}
+
+/// What the supervisor knows about a backend that is no longer there.
+struct BackendExit {
+    status: String,
+    uptime: Duration,
+    port: u16,
+}
+
+/// Reports the registered backend as exited, or `None` while it is still alive.
+///
+/// A missing registration counts as an exit on purpose: it is what a failed
+/// restart leaves behind, and the supervisor must retry that case too.
+fn unexpected_backend_exit() -> Option<BackendExit> {
+    let mut guard = match BACKEND_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let Some(state) = guard.as_mut() else {
+        return Some(BackendExit {
+            status: "no backend process is running".to_string(),
+            uptime: Duration::ZERO,
+            port: 0,
+        });
+    };
+
+    match state.process.try_wait() {
+        Ok(Some(status)) => Some(BackendExit {
+            status: describe_exit_status(status),
+            uptime: state.start_time.elapsed(),
+            port: state.port,
+        }),
+        Ok(None) => None,
+        Err(e) => {
+            log::warn!("[backend] could not query the backend process: {}", e);
+            None
+        }
+    }
+}
+
+
 
 // --------------------------------------------------------------------------
 // Port Management
@@ -370,9 +587,15 @@ fn check_backend_health(port: u16) -> bool {
 
 /// Polls `/health` until the backend answers or [`HEALTH_CHECK_TIMEOUT`] elapses.
 ///
+/// `generation` names the backend process the caller is waiting for. When the
+/// supervisor replaces that process mid-wait this returns `false` immediately:
+/// the supervisor navigates the window itself, and a caller that kept polling
+/// the old port would later reload a page the user is already working in.
+/// Pass `None` from a restart — the caller *is* the replacement.
+///
 /// Intended to be called from a background thread: it blocks and emits
 /// `backend-status` progress events while it waits.
-fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
+fn wait_for_backend_ready(port: u16, generation: Option<u64>, app_handle: &AppHandle) -> bool {
     let start = Instant::now();
 
     #[cfg(debug_assertions)]
@@ -380,6 +603,20 @@ fn wait_for_backend_ready(port: u16, app_handle: &AppHandle) -> bool {
 
     let mut last_status = start;
     loop {
+        if matches!(generation, Some(expected) if backend_generation() != expected) {
+            #[cfg(debug_assertions)]
+            println!("Backend was replaced while waiting; handing over to the supervisor");
+
+            return false;
+        }
+
+        // A child that is gone cannot become ready. Bail out instead of burning
+        // the full timeout: a crash-looping backend is then retried within
+        // seconds per attempt rather than a minute per attempt.
+        if !backend_child_running() {
+            return false;
+        }
+
         // Throttled so a slow start does not flood the frontend with events.
         if last_status.elapsed() >= BACKEND_STATUS_INTERVAL {
             last_status = Instant::now();
@@ -557,7 +794,19 @@ fn drain_pipes(child: &mut Child) {
     if let Some(stderr) = child.stderr.take() {
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if !line.trim().is_empty() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+
+                remember_stderr_line(&line);
+
+                // A Go panic / runtime fatal error is printed exactly once, as
+                // the last thing the process says. Logging it at error level
+                // (and keeping it in the tail) is what turns a silent "the
+                // service closed" into an actionable stack trace.
+                if line.contains("panic:") || line.contains("fatal error:") {
+                    log::error!("[backend] {}", line);
+                } else {
                     log::warn!("[backend] {}", line);
                 }
             }
@@ -607,9 +856,20 @@ fn spawn_backend(resource_dir: &Path) -> Result<(Child, u16), BackendError> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
+    // The tail describes one child's lifetime; a new child starts with a clean
+    // slate so a later crash report cannot quote an older process's output.
+    clear_stderr_tail();
+
     let mut child = command
         .spawn()
         .map_err(|e| BackendError::SpawnFailed(format!("{} ({})", e, backend_path.display())))?;
+
+    log::info!(
+        "[backend] spawned PID {:?} on port {} ({})",
+        child.id(),
+        port,
+        backend_path.display()
+    );
 
     #[cfg(debug_assertions)]
     println!("Backend process spawned, PID: {:?}", child.id());
@@ -621,8 +881,11 @@ fn spawn_backend(resource_dir: &Path) -> Result<(Child, u16), BackendError> {
 
 /// Terminates the backend and reaps it.
 fn stop_backend() {
-    let Ok(mut guard) = BACKEND_STATE.lock() else {
-        return;
+    // Recover from a poisoned lock instead of bailing out: leaving the child
+    // running would keep it bound to the port after the app is gone.
+    let mut guard = match BACKEND_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     };
     let Some(mut state) = guard.take() else {
         return;
@@ -668,55 +931,182 @@ fn stop_backend() {
     println!("Backend stopped");
 }
 
+/// Stops the backend because the app is going away.
+///
+/// The flag is what keeps the supervisor from resurrecting a backend that was
+/// stopped on purpose: once the child was gone, closing the window and a crash
+/// looked exactly the same.
+fn shutdown_backend() {
+    BACKEND_SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    stop_backend();
+}
+
 /// Restarts the backend and waits for the replacement to answer.
 ///
-/// Blocks; call it from a background thread (see [`restart_backend_cmd`]).
-fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) {
+/// Returns `true` when a healthy replacement is running. Blocks for up to
+/// [`HEALTH_CHECK_TIMEOUT`], so call it from a background thread (see
+/// [`restart_backend_cmd`] and [`supervise_backend`]).
+fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) -> bool {
     #[cfg(debug_assertions)]
     println!("Restarting backend...");
 
+    log::info!("[backend] restart requested");
+
     stop_backend();
+
+    // A restart queued just before the window closed must not spawn a process
+    // that then outlives the app.
+    if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return false;
+    }
+
     thread::sleep(Duration::from_secs(1));
 
-    match spawn_backend(resource_dir) {
-        Ok((process, port)) => {
-            if let Ok(mut guard) = BACKEND_STATE.lock() {
-                *guard = Some(BackendState {
-                    process,
-                    port,
-                    start_time: Instant::now(),
-                });
-            }
-
-            if !wait_for_backend_ready(port, app_handle) {
-                let msg = format!(
-                    "Backend did not become ready within {}s after a restart",
-                    HEALTH_CHECK_TIMEOUT.as_secs()
-                );
-                eprintln!("{}", msg);
-                let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
-                return;
-            }
-
-            // The new instance may have picked a different port, so point the
-            // window at it again.
-            if let Some(window) = app_handle.get_webview_window("main") {
-                if let Ok(url) = format!("http://127.0.0.1:{}/", port).parse::<tauri::Url>() {
-                    let _ = window.navigate(url);
-                }
-            }
-
-            #[cfg(debug_assertions)]
-            println!("Backend restarted on port {}", port);
-
-            let _ = app_handle.emit("backend-restarted", port);
-        }
+    let (process, port) = match spawn_backend(resource_dir) {
+        Ok(spawned) => spawned,
         Err(e) => {
-            eprintln!("Restart failed: {}", e);
+            log::error!("[backend] restart failed: {}", e);
             let _ = app_handle.emit(
                 "backend-error",
                 serde_json::json!({ "message": e.to_string() }),
             );
+            return false;
+        }
+    };
+
+    install_backend(process, port);
+
+    if !wait_for_backend_ready(port, None, app_handle) {
+        let msg = format!(
+            "Backend did not become ready within {}s after a restart",
+            HEALTH_CHECK_TIMEOUT.as_secs()
+        );
+        log::error!("[backend] {}", msg);
+        let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
+
+        // A replacement that never answers is no better than a dead one. Drop
+        // it so the supervisor sees "no backend" on its next tick and retries
+        // with backoff, instead of leaving a half-started process behind.
+        stop_backend();
+        return false;
+    }
+
+    // The new instance may have picked a different port, so point the window at
+    // it again.
+    if let Some(window) = app_handle.get_webview_window("main") {
+        if let Ok(url) = format!("http://127.0.0.1:{}/", port).parse::<tauri::Url>() {
+            let _ = window.navigate(url);
+        }
+    }
+
+    log::info!("[backend] restarted on port {}", port);
+
+    #[cfg(debug_assertions)]
+    println!("Backend restarted on port {}", port);
+
+    let _ = app_handle.emit("backend-restarted", port);
+
+    true
+}
+
+/// Watches the backend child and brings it back when it dies.
+///
+/// The shell used to spawn the backend exactly once. A panic in any goroutine
+/// (Go takes the whole process down, even when `net/http` would have recovered
+/// the same panic inside a handler), an OOM kill, or a stray `kill` therefore
+/// left the window pointing at a closed port: no message, no recovery short of
+/// restarting the app. The supervisor turns that into a logged, self-healing
+/// restart — and, once the retry budget is spent, into a visible error instead
+/// of a silently dead window.
+///
+/// It deliberately restarts on *process exit* only, never on a failed `/health`
+/// probe: a busy backend can miss a probe while a long-running task is making
+/// progress, and killing it there would throw the user's work away.
+fn supervise_backend(app_handle: AppHandle, resource_dir: PathBuf) {
+    let mut failures: u32 = 0;
+
+    loop {
+        thread::sleep(SUPERVISE_INTERVAL);
+
+        if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
+            return;
+        }
+
+        // Only one restart may be in flight. A manual restart (or a previous
+        // auto-restart) holds this guard, so a tick landing in the middle of it
+        // must not conclude that the backend is gone.
+        let _guard = match RESTART_GUARD.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => continue,
+        };
+
+        if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let Some(exit) = unexpected_backend_exit() else {
+            // Alive for a full interval: the previous crash is behind us, so the
+            // next one gets the full retry budget again.
+            failures = 0;
+            continue;
+        };
+
+        log::error!(
+            "[backend] exited unexpectedly after {:.1}s on port {}: {}",
+            exit.uptime.as_secs_f64(),
+            exit.port,
+            exit.status
+        );
+
+        // The exit status says *that* it died; the tail says *why*.
+        for line in backend_stderr_tail() {
+            log::error!("[backend] (last output) {}", line);
+        }
+
+        let _ = app_handle.emit(
+            "backend-exited",
+            serde_json::json!({
+                "status": exit.status.clone(),
+                "port": exit.port,
+                "uptime": exit.uptime.as_secs(),
+            }),
+        );
+
+        if failures >= MAX_BACKEND_RESTARTS {
+            let msg = format!(
+                "The Go Magic service stopped unexpectedly ({}).\n\n\
+                 Automatic restarts failed {} times, so it was not brought back.\n\
+                 Please restart the application and check the log file for the \
+                 backend's last output.",
+                exit.status, MAX_BACKEND_RESTARTS
+            );
+
+            log::error!(
+                "[backend] giving up after {} restart attempts",
+                MAX_BACKEND_RESTARTS
+            );
+            let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
+            show_error_dialog(&app_handle, "Go Magic Service Stopped", &msg);
+            return;
+        }
+
+        let delay = restart_delay(failures);
+        failures += 1;
+
+        log::warn!(
+            "[backend] restarting in {:.0}s (attempt {}/{})",
+            delay.as_secs_f64(),
+            failures,
+            MAX_BACKEND_RESTARTS
+        );
+
+        if sleep_unless_shutting_down(delay) {
+            return;
+        }
+
+        if restart_backend(&app_handle, &resource_dir) {
+            failures = 0;
         }
     }
 }
@@ -736,13 +1126,24 @@ fn get_backend_port() -> Option<u16> {
 #[tauri::command]
 fn restart_backend_cmd(app_handle: AppHandle) {
     let Ok(resource_dir) = app_handle.path().resource_dir() else {
-        eprintln!("Restart failed: resource directory is unavailable");
+        log::error!("[backend] restart failed: resource directory is unavailable");
         return;
     };
 
     // A restart takes seconds; never block the IPC thread on it.
     let _ = app_handle.emit("backend-restarting", serde_json::json!({}));
-    thread::spawn(move || restart_backend(&app_handle, &resource_dir));
+
+    thread::spawn(move || {
+        // Serialise with the supervisor. Without this, a manual restart landing
+        // on the same tick as an automatic one spawns two backends, which then
+        // fight over the port and over `sessions.db`.
+        let _guard = match RESTART_GUARD.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        restart_backend(&app_handle, &resource_dir);
+    });
 }
 
 #[tauri::command]
@@ -834,13 +1235,15 @@ fn main() {
                 }
             };
 
+            install_backend(process, port);
+
+            // From here on the backend is watched for the app's whole lifetime:
+            // a child that dies must be restarted instead of leaving the window
+            // pointing at a closed port.
             {
-                let mut guard = BACKEND_STATE.lock().unwrap();
-                *guard = Some(BackendState {
-                    process,
-                    port,
-                    start_time: Instant::now(),
-                });
+                let app_handle = app_handle.clone();
+                let resource_dir = resource_dir.clone();
+                thread::spawn(move || supervise_backend(app_handle, resource_dir));
             }
 
             let server_url = format!("http://127.0.0.1:{}/", port);
@@ -1020,7 +1423,9 @@ fn main() {
                 let window = window.clone();
 
                 thread::spawn(move || {
-                    if wait_for_backend_ready(port, &app_handle) {
+                    let generation = backend_generation();
+
+                    if wait_for_backend_ready(port, Some(generation), &app_handle) {
                         let _ = window.navigate(backend_url);
 
                         let _ = app_handle.emit(
@@ -1033,19 +1438,36 @@ fn main() {
 
                         #[cfg(debug_assertions)]
                         println!("Application ready on port {}", port);
-                    } else {
-                        stop_backend();
 
-                        let msg = format!(
-                            "Backend did not become ready within {}s.\nPlease check the log file for details.",
+                        return;
+                    }
+
+                    // Two different failures share this branch. If the child
+                    // died during startup — or a supervised restart already
+                    // replaced it — recovery belongs to the supervisor, and
+                    // quitting here would kill the app just as the backend
+                    // comes back.
+                    if backend_generation() != generation || !backend_child_running() {
+                        log::warn!(
+                            "[backend] no answer within {}s; leaving recovery to the supervisor",
                             HEALTH_CHECK_TIMEOUT.as_secs()
                         );
-                        eprintln!("{}", msg);
-                        let _ = app_handle
-                            .emit("backend-error", serde_json::json!({ "message": msg }));
-                        show_error_dialog(&app_handle, "Application Startup Failed", &msg);
-                        app_handle.exit(1);
+                        return;
                     }
+
+                    // Still alive but never answered: nothing has been loaded
+                    // yet, so fail loudly rather than leave an empty window.
+                    shutdown_backend();
+
+                    let msg = format!(
+                        "Backend did not become ready within {}s.\nPlease check the log file for details.",
+                        HEALTH_CHECK_TIMEOUT.as_secs()
+                    );
+                    log::error!("[backend] {}", msg);
+                    let _ = app_handle
+                        .emit("backend-error", serde_json::json!({ "message": msg }));
+                    show_error_dialog(&app_handle, "Application Startup Failed", &msg);
+                    app_handle.exit(1);
                 });
             }
 
@@ -1062,7 +1484,10 @@ fn main() {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } => {
                     save_window_state(&app_handle);
-                    stop_backend();
+                    // Sets the shutdown flag first, so the supervisor cannot
+                    // interpret the intentional kill as a crash and restart the
+                    // backend while the app is exiting.
+                    shutdown_backend();
                     app_handle.exit(0);
                 }
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
