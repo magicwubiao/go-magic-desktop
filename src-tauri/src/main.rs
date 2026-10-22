@@ -487,8 +487,18 @@ fn unexpected_backend_exit() -> Option<BackendExit> {
 // Port Management
 // --------------------------------------------------------------------------
 
+/// Probes the port the same way the backend will bind it.
+///
+/// The Go backend listens on the wildcard (`:%d`), so the probe must claim the
+/// wildcard too. On Windows a loopback-specific bind (`127.0.0.1:port`)
+/// *succeeds* even while another process already owns the wildcard port — Go
+/// does not set `SO_EXCLUSIVEADDRUSE` — so probing loopback let two app
+/// instances both "verify" port 5000 as free. The second backend then died on
+/// startup, and because the surviving instance's server kept answering the
+/// health probe, the supervisor treated every restart as a success and
+/// reloaded the window every few seconds, forever.
 fn is_port_available(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_ok()
+    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).is_ok()
 }
 
 fn pick_available_port() -> Option<u16> {
@@ -546,6 +556,10 @@ fn read_status_code(stream: &mut TcpStream) -> Option<u16> {
 }
 
 /// Probes `GET /health` on the local backend.
+///
+/// Note the probe only sees *a* server on this port — it cannot attribute the
+/// answer to this instance's child. Callers that care (every caller does) must
+/// pair a successful probe with [`backend_child_running`].
 ///
 /// Speaks HTTP/1.1 over a raw socket on purpose: the only request this shell
 /// ever makes is this plain-HTTP localhost liveness check, and a full HTTP client
@@ -631,6 +645,20 @@ fn wait_for_backend_ready(port: u16, generation: Option<u64>, app_handle: &AppHa
         }
 
         if check_backend_health(port) {
+            // A 200 is only meaningful if it came from OUR child. While two
+            // app instances are running, the other instance's backend may be
+            // the one answering here (e.g. both selected the same port before
+            // either bound it): the probe cannot tell the servers apart.
+            // Reporting success for a dead child reset the supervisor's retry
+            // budget on every attempt and reloaded the window forever, so a
+            // dead child always counts as "not ready".
+            if !backend_child_running() {
+                #[cfg(debug_assertions)]
+                println!("Health probe answered but the backend child is gone; treating as not ready");
+
+                return false;
+            }
+
             #[cfg(debug_assertions)]
             println!("Backend ready after {}ms", start.elapsed().as_millis());
             return true;

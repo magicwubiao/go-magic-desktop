@@ -121,6 +121,29 @@ mod tests {
         );
     }
 
+    /// The port probe must claim the same socket the Go backend will bind (the
+    /// wildcard), not a loopback-specific one. On Windows a `127.0.0.1:port`
+    /// bind succeeds even while another process holds the wildcard port — Go
+    /// does not set `SO_EXCLUSIVEADDRUSE` — which is how two app instances
+    /// could both select port 5000 and the second one crash-loop forever.
+    #[test]
+    fn a_wildcard_bound_port_is_not_reported_available() {
+        let listener =
+            TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).expect("bind ephemeral wildcard port");
+        let port = listener.local_addr().unwrap().port();
+
+        assert!(
+            !is_port_available(port),
+            "port {} is held on the wildcard but reported as available",
+            port
+        );
+
+        // Once the holder is gone the port must read as available again.
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(is_port_available(port));
+    }
+
     #[test]
     fn backend_errors_have_readable_messages() {
         assert_eq!(
