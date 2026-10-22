@@ -1216,6 +1216,24 @@ fn main() {
     );
 
     tauri::Builder::default()
+        // MUST be the first plugin: it takes a process-wide mutex before
+        // anything else runs. When a second instance is launched, the callback
+        // below fires in the *first* instance, and the second process exits
+        // immediately — it never spawns its own backend, so the two shells can
+        // no longer fight over the backend port and the shared `~/.magic` data
+        // directory (which manifested as one window reloading every few
+        // seconds while its supervisor "successfully" restarted a backend that
+        // could never bind).
+        .plugin(
+            tauri_plugin_single_instance::init(|app, _args, _cwd| {
+                // Bring the already-running instance to the foreground so the
+                // user understands why nothing else opened.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }),
+        )
         .plugin(
             tauri_plugin_log::Builder::new()
                 // The default level is `Trace`, which floods the log file. `Info`

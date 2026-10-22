@@ -18,6 +18,15 @@ tauri-build = { version = "2.1", features = [] }
 tauri = { version = "2.1" }
 tauri-plugin-log = "2.1"
 tauri-plugin-dialog = "2.1"
+# Enforces a single running instance: a second launch detects the first via a
+# named mutex (Win32 on Windows), hands its argv over, and exits immediately —
+# long before any backend is spawned. Two live shells would otherwise fight
+# over the backend port and the shared `~/.magic` state directory, which is how
+# one window ended up reloading every few seconds (the supervisor kept
+# "successfully" restarting a backend whose bind could never succeed while the
+# other instance's server answered its health probes). Must be the FIRST
+# plugin registered — see the plugin's docs.
+tauri-plugin-single-instance = "2"
 
 # `tauri-plugin-log` needs the `log` facade; it is the same version tauri uses,
 # so this does not add a second copy to the dependency graph.
