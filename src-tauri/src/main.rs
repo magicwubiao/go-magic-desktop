@@ -3,8 +3,9 @@
 //! Go Magic Desktop - Process Isolation Mode
 //!
 //! This shell is deliberately thin: it spawns the bundled `go-magic` backend as
-//! a child process, points a webview at `http://127.0.0.1:<port>` and shuts the
-//! backend down again when the window closes.
+//! a child process, shows a bundled splash page until the backend's health
+//! check answers, then points the webview at `http://127.0.0.1:<port>` and
+//! shuts the backend down again when the window closes.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -1303,8 +1304,17 @@ fn main() {
                 }
             };
 
-            #[cfg(debug_assertions)]
-            println!("Creating window, URL: {}", server_url);
+            // The window opens on a bundled splash page (src-tauri/splash,
+            // embedded via `frontendDist` in tauri.conf.json) instead of the
+            // backend URL: at this point the backend has not bound its port
+            // yet, and pointing the webview straight at it makes WebView2
+            // render its own "can't reach this page" error for a moment. That
+            // flash was most visible on the very first launch, where first-run
+            // initialisation keeps the backend from listening for a few
+            // seconds; on later launches the port usually binds before the
+            // webview's first navigation, hiding the race. The health-check
+            // thread below navigates to the real URL once the backend answers.
+            let splash_url = WebviewUrl::App("index.html".into());
 
             let window_state = load_window_state(&app_handle);
 
@@ -1344,7 +1354,7 @@ fn main() {
             let builder = WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External(backend_url.clone()),
+                splash_url,
             )
             .title("Go Magic")
             .inner_size(window_state.width, window_state.height)
@@ -1380,8 +1390,14 @@ fn main() {
                 let app_handle_clone = app_handle.clone();
                 move |url| {
                     let host = url.host_str().unwrap_or("");
-                    // Allow local backend URLs
-                    if host == "127.0.0.1" || host == "localhost" {
+                    // Allow local backend URLs and the shell's own splash page
+                    // (`http://tauri.localhost` on Windows, `tauri://localhost`
+                    // on macOS/Linux).
+                    if host == "127.0.0.1"
+                        || host == "localhost"
+                        || host.ends_with("tauri.localhost")
+                        || url.scheme() == "tauri"
+                    {
                         return true;
                     }
                     // Block other navigation and open in system browser instead
@@ -1394,8 +1410,12 @@ fn main() {
                 move |url, _features| {
                     // Intercept target="_blank" links and open in system browser
                     let host = url.host_str().unwrap_or("");
-                    // Allow local backend URLs
-                    if host == "127.0.0.1" || host == "localhost" {
+                    // Allow local backend URLs and the shell's own splash page
+                    if host == "127.0.0.1"
+                        || host == "localhost"
+                        || host.ends_with("tauri.localhost")
+                        || url.scheme() == "tauri"
+                    {
                         return NewWindowResponse::Allow;
                     }
                     // Open external links in system browser
@@ -1460,10 +1480,9 @@ fn main() {
             // ignored, and a maximized window only exists after the reveal above.
             let _ = window.set_focus();
 
-            // Wait for the backend off the UI thread, then make sure the window
-            // is actually showing it. The window's very first load races the
-            // backend and may briefly show a connection error; this reloads it
-            // once the server answers.
+            // Wait for the backend off the UI thread, then swap the splash page
+            // for the real UI: the window initially shows the bundled loading
+            // page, and this navigation replaces it once the server answers.
             {
                 let app_handle = app_handle.clone();
                 let window = window.clone();

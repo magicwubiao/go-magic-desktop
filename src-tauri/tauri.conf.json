@@ -7,7 +7,7 @@
     "beforeBuildCommand": "",
     "beforeDevCommand": "",
     "devUrl": "http://localhost:5000",
-    "frontendDist": "../web-dist"
+    "frontendDist": "splash"
   },
   "app": {
     "windows": [],

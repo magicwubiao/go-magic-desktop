@@ -60,12 +60,17 @@ jobs:
           repository: magicwubiao/go-magic
           path: go-magic
 
+      # The Web UI must be built before the backend: internal/server/dist is
+      # the go:embed target and is gitignored, so a clean checkout fails to
+      # compile without it. Its output is no longer copied into web-dist — the
+      # shell's frontendDist is the tiny splash page (src-tauri/splash); the
+      # embedded copy inside the backend binary is what the window actually
+      # loads at http://127.0.0.1:<port>.
       - name: Build web UI
         run: |
           cd go-magic/web
           npm install
           npm run build
-          cp -r ../internal/server/dist ../../web-dist/
         shell: bash
 
       - name: Build backend
