@@ -21,6 +21,10 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
+// Shell text (menus, dialogs) lives in its own module; see `locales.rs`.
+mod locales;
+use locales::{fill, shell_text};
+
 // ============================================================================
 // Window State Management
 // ============================================================================
@@ -1019,9 +1023,9 @@ fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) -> bool {
     install_backend(process, port);
 
     if !wait_for_backend_ready(port, None, app_handle) {
-        let msg = format!(
-            "Backend did not become ready within {}s after a restart",
-            HEALTH_CHECK_TIMEOUT.as_secs()
+        let msg = fill(
+            shell_text().dialog_backend_not_ready_restart,
+            &[&HEALTH_CHECK_TIMEOUT.as_secs().to_string()],
         );
         log::error!("[backend] {}", msg);
         let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
@@ -1116,12 +1120,9 @@ fn supervise_backend(app_handle: AppHandle, resource_dir: PathBuf) {
         );
 
         if failures >= MAX_BACKEND_RESTARTS {
-            let msg = format!(
-                "The Go Magic service stopped unexpectedly ({}).\n\n\
-                 Automatic restarts failed {} times, so it was not brought back.\n\
-                 Please restart the application and check the log file for the \
-                 backend's last output.",
-                exit.status, MAX_BACKEND_RESTARTS
+            let msg = fill(
+                shell_text().dialog_service_stopped,
+                &[&exit.status.to_string(), &MAX_BACKEND_RESTARTS.to_string()],
             );
 
             log::error!(
@@ -1129,7 +1130,11 @@ fn supervise_backend(app_handle: AppHandle, resource_dir: PathBuf) {
                 MAX_BACKEND_RESTARTS
             );
             let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
-            show_error_dialog(&app_handle, "Go Magic Service Stopped", &msg);
+            show_error_dialog(
+                &app_handle,
+                shell_text().dialog_service_stopped_title,
+                &msg,
+            );
             return;
         }
 
@@ -1258,22 +1263,24 @@ fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
         }
     };
 
-    let mut message = format!(
-        "新版本 {} 已发布（当前版本 {}）。\n\n是否前往下载页面？",
-        notice.latest_version, notice.current_version
+    let text = shell_text();
+
+    let mut message = fill(
+        text.dialog_update_body,
+        &[&notice.latest_version, &notice.current_version],
     );
     let notes = notice.notes.trim();
     if !notes.is_empty() {
-        message.push_str(&format!("\n\n更新内容：\n{}", notes));
+        message.push_str(&fill(text.dialog_update_notes, &[notes]));
     }
 
     app_handle
         .dialog()
         .message(message)
-        .title("发现新版本")
+        .title(text.dialog_update_title)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "前往下载".to_string(),
-            "稍后再说".to_string(),
+            text.dialog_update_go.to_string(),
+            text.dialog_update_later.to_string(),
         ))
         .show(move |go_download| {
             if go_download {
@@ -1307,18 +1314,23 @@ fn update_check_finished(app_handle: AppHandle, status: String) {
 
     match status.as_str() {
         "up-to-date" => {
+            let text = shell_text();
             app_handle
                 .dialog()
-                .message(format!("当前已是最新版本（{}）。", env!("APP_VERSION")))
-                .title("检查更新")
+                .message(fill(
+                    text.dialog_check_up_to_date,
+                    &[env!("APP_VERSION")],
+                ))
+                .title(text.dialog_check_updates_title)
                 .buttons(MessageDialogButtons::Ok)
                 .show(|_| {});
         }
         "error" => {
+            let text = shell_text();
             app_handle
                 .dialog()
-                .message("检查更新失败，请检查网络连接后重试。")
-                .title("检查更新")
+                .message(text.dialog_check_error)
+                .title(text.dialog_check_updates_title)
                 .buttons(MessageDialogButtons::Ok)
                 .show(|_| {});
         }
@@ -1403,13 +1415,15 @@ fn main() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
+            let text = shell_text();
+
             let resource_dir = match app.path().resource_dir() {
                 Ok(dir) => dir,
                 Err(e) => {
                     show_error_dialog(
                         &app_handle,
-                        "Startup Error",
-                        &format!("Failed to get resource directory: {}", e),
+                        text.dialog_startup_error,
+                        &fill(text.dialog_resource_dir_error, &[&e.to_string()]),
                     );
                     return Err(e.into());
                 }
@@ -1426,15 +1440,15 @@ fn main() {
                 Ok(result) => result,
                 Err(e) => {
                     let error_msg = match &e {
-                        BackendError::BackendNotFound => format!(
-                            "Backend executable not found\nPlease check resource directory: {:?}",
-                            resource_dir
+                        BackendError::BackendNotFound => fill(
+                            text.dialog_backend_not_found,
+                            &[&format!("{:?}", resource_dir)],
                         ),
                         other => other.to_string(),
                     };
 
                     eprintln!("Failed to start backend: {}", error_msg);
-                    show_error_dialog(&app_handle, "Application Startup Failed", &error_msg);
+                    show_error_dialog(&app_handle, text.dialog_startup_failed, &error_msg);
                     return Err("Backend startup failed".into());
                 }
             };
@@ -1454,9 +1468,9 @@ fn main() {
             let backend_url: tauri::Url = match server_url.parse() {
                 Ok(url) => url,
                 Err(e) => {
-                    let msg = format!("Invalid backend URL {}: {}", server_url, e);
+                    let msg = fill(text.dialog_invalid_url, &[&server_url, &e.to_string()]);
                     eprintln!("{}", msg);
-                    show_error_dialog(&app_handle, "Application Startup Failed", &msg);
+                    show_error_dialog(&app_handle, text.dialog_startup_failed, &msg);
                     return Err("Invalid backend URL".into());
                 }
             };
@@ -1597,9 +1611,10 @@ fn main() {
             };
 
             // ----------------------------------------------------------------
-            // Native menu bar (per user mockup):
+            // Native menu bar (labels come from `shell_text()`, which follows
+            // the OS language; see `locales.rs`):
             //
-            //   编辑(E)  窗口(W)  帮助(H)  关于(A)
+            //   编辑/Edit(E)  窗口/Window(W)  帮助/Help(H)  关于/About(A)
             //
             // Predefined items run natively; on Windows cut/copy/paste/
             // select_all and minimize/maximize are supported, while undo/redo/
@@ -1609,19 +1624,30 @@ fn main() {
             // best-effort: a menu error is logged, never fatal to startup.
             let app_menu: tauri::Result<Menu<tauri::Wry>> = (|| {
                 let handle = &app_handle;
+                let text = shell_text();
 
                 // 编辑(E): standard clipboard actions, native accelerators.
-                let edit_submenu = Submenu::with_id(handle, "edit_menu", "编辑(&E)", true)?;
-                edit_submenu.append(&PredefinedMenuItem::cut(handle, Some("剪切(&T)"))?)?;
-                edit_submenu.append(&PredefinedMenuItem::copy(handle, Some("复制(&C)"))?)?;
-                edit_submenu.append(&PredefinedMenuItem::paste(handle, Some("粘贴(&P)"))?)?;
+                let edit_submenu = Submenu::with_id(handle, "edit_menu", text.edit_menu, true)?;
+                edit_submenu.append(&PredefinedMenuItem::cut(handle, Some(text.edit_cut))?)?;
+                edit_submenu.append(&PredefinedMenuItem::copy(handle, Some(text.edit_copy))?)?;
+                edit_submenu.append(&PredefinedMenuItem::paste(handle, Some(text.edit_paste))?)?;
                 edit_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
-                edit_submenu.append(&PredefinedMenuItem::select_all(handle, Some("全选(&A)"))?)?;
+                edit_submenu.append(&PredefinedMenuItem::select_all(
+                    handle,
+                    Some(text.edit_select_all),
+                )?)?;
 
                 // 窗口(W): native window commands plus custom toggles.
-                let window_submenu = Submenu::with_id(handle, "window_menu", "窗口(&W)", true)?;
-                window_submenu.append(&PredefinedMenuItem::minimize(handle, Some("最小化(&N)"))?)?;
-                window_submenu.append(&PredefinedMenuItem::maximize(handle, Some("最大化(&M)"))?)?;
+                let window_submenu =
+                    Submenu::with_id(handle, "window_menu", text.window_menu, true)?;
+                window_submenu.append(&PredefinedMenuItem::minimize(
+                    handle,
+                    Some(text.window_minimize),
+                )?)?;
+                window_submenu.append(&PredefinedMenuItem::maximize(
+                    handle,
+                    Some(text.window_maximize),
+                )?)?;
                 window_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
                 // 置顶 is a toggle: a clone of the checkbox item is kept in
                 // managed state so the event handler can keep the checkmark in
@@ -1629,7 +1655,7 @@ fn main() {
                 let pin_item = CheckMenuItem::with_id(
                     handle,
                     "toggle_pin",
-                    "窗口置顶",
+                    text.window_pin,
                     true,
                     false,
                     None::<&str>,
@@ -1640,17 +1666,17 @@ fn main() {
                 window_submenu.append(&MenuItem::with_id(
                     handle,
                     "reload_page",
-                    "刷新页面(&R)",
+                    text.window_reload,
                     true,
                     Some("F5"),
                 )?)?;
 
                 // 帮助(H): update check, diagnostics, external links.
-                let help_submenu = Submenu::with_id(handle, "help_menu", "帮助(&H)", true)?;
+                let help_submenu = Submenu::with_id(handle, "help_menu", text.help_menu, true)?;
                 help_submenu.append(&MenuItem::with_id(
                     handle,
                     "check_updates",
-                    "检查更新...",
+                    text.help_check_updates,
                     true,
                     None::<&str>,
                 )?)?;
@@ -1658,21 +1684,21 @@ fn main() {
                 help_submenu.append(&MenuItem::with_id(
                     handle,
                     "open_log_dir",
-                    "打开日志目录",
+                    text.help_open_logs,
                     true,
                     None::<&str>,
                 )?)?;
                 help_submenu.append(&MenuItem::with_id(
                     handle,
                     "open_data_dir",
-                    "打开数据目录",
+                    text.help_open_data,
                     true,
                     None::<&str>,
                 )?)?;
                 help_submenu.append(&MenuItem::with_id(
                     handle,
                     "restart_backend",
-                    "重启后端服务",
+                    text.help_restart_backend,
                     true,
                     None::<&str>,
                 )?)?;
@@ -1680,24 +1706,18 @@ fn main() {
                 help_submenu.append(&MenuItem::with_id(
                     handle,
                     "open_docs",
-                    "使用文档",
-                    true,
-                    None::<&str>,
-                )?)?;
-                help_submenu.append(&MenuItem::with_id(
-                    handle,
-                    "open_homepage",
-                    "项目主页",
+                    text.help_open_docs,
                     true,
                     None::<&str>,
                 )?)?;
 
                 // 关于(A): about dialog + quit.
-                let about_submenu = Submenu::with_id(handle, "about_menu", "关于(&A)", true)?;
+                let about_submenu =
+                    Submenu::with_id(handle, "about_menu", text.about_menu, true)?;
                 about_submenu.append(&MenuItem::with_id(
                     handle,
                     "about_app",
-                    "关于 Go Magic",
+                    text.about_app,
                     true,
                     None::<&str>,
                 )?)?;
@@ -1705,9 +1725,9 @@ fn main() {
                 about_submenu.append(&MenuItem::with_id(
                     handle,
                     "quit_app",
-                    "退出 Go Magic",
+                    text.quit_app,
                     true,
-                    Some("Alt+F4"),
+                    Some(text.quit_app_accelerator),
                 )?)?;
 
                 Menu::with_items(
@@ -1814,14 +1834,18 @@ fn main() {
                     // yet, so fail loudly rather than leave an empty window.
                     shutdown_backend();
 
-                    let msg = format!(
-                        "Backend did not become ready within {}s.\nPlease check the log file for details.",
-                        HEALTH_CHECK_TIMEOUT.as_secs()
+                    let msg = fill(
+                        shell_text().dialog_backend_not_ready,
+                        &[&HEALTH_CHECK_TIMEOUT.as_secs().to_string()],
                     );
                     log::error!("[backend] {}", msg);
                     let _ = app_handle
                         .emit("backend-error", serde_json::json!({ "message": msg }));
-                    show_error_dialog(&app_handle, "Application Startup Failed", &msg);
+                    show_error_dialog(
+                        &app_handle,
+                        shell_text().dialog_startup_failed,
+                        &msg,
+                    );
                     app_handle.exit(1);
                 });
             }
@@ -1861,15 +1885,18 @@ fn main() {
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
                 "about_app" => {
-                    let about = format!(
-                        "Go Magic Desktop\n版本 {}（{}）\n构建时间：{}",
-                        env!("APP_VERSION"),
-                        option_env!("GIT_COMMIT").unwrap_or("unknown"),
-                        option_env!("BUILD_TIME").unwrap_or("unknown"),
+                    let text = shell_text();
+                    let about = fill(
+                        text.dialog_about_body,
+                        &[
+                            env!("APP_VERSION"),
+                            option_env!("GIT_COMMIT").unwrap_or("unknown"),
+                            option_env!("BUILD_TIME").unwrap_or("unknown"),
+                        ],
                     );
                     app.dialog()
                         .message(about)
-                        .title("关于 Go Magic")
+                        .title(text.dialog_about_title)
                         .buttons(MessageDialogButtons::Ok)
                         .show(|_| {});
                 }
@@ -1881,9 +1908,10 @@ fn main() {
                     if let Err(e) = spawn_update_check(app) {
                         MANUAL_UPDATE_CHECK.store(false, Ordering::SeqCst);
                         log::warn!("[update] manual check failed to open window: {}", e);
+                        let text = shell_text();
                         app.dialog()
-                            .message("检查更新失败，请稍后重试。")
-                            .title("检查更新")
+                            .message(text.dialog_check_spawn_failed)
+                            .title(text.dialog_check_updates_title)
                             .buttons(MessageDialogButtons::Ok)
                             .show(|_| {});
                     }
@@ -1932,11 +1960,6 @@ fn main() {
                     }
                 }
                 "restart_backend" => trigger_backend_restart(app),
-                "open_homepage" => {
-                    if let Err(e) = open::that("https://github.com/magicwubiao/go-magic-desktop") {
-                        log::warn!("[menu] failed to open homepage: {}", e);
-                    }
-                }
                 "open_docs" => {
                     if let Err(e) = open::that("https://magictech.cc/docs.html") {
                         log::warn!("[menu] failed to open docs: {}", e);

@@ -32,6 +32,11 @@ tauri-plugin-single-instance = "2"
 # so this does not add a second copy to the dependency graph.
 log = "0.4"
 
+# Detects the OS language at startup so the native menus and dialogs (the only
+# UI the shell owns) follow the system locale. One tiny crate, no TLS/HTTP
+# surface.
+sys-locale = "0.3"
+
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
