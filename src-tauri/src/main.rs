@@ -269,6 +269,13 @@ const AUTO_RESTART_BASE_DELAY: Duration = Duration::from_secs(1);
 const AUTO_RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
 /// How many stderr lines are kept around to explain an unexpected exit.
 const BACKEND_STDERR_TAIL_LINES: usize = 20;
+/// Upper bound on the hidden update-check window's lifetime.
+///
+/// The page closes itself through `update_check_finished` once its check has
+/// settled (found / nothing to do / failed). This bound exists so a hung
+/// fetch — the page's own fetch timeout is 8s — can never leak a hidden
+/// webview for the whole session.
+const UPDATE_CHECK_MAX_LIFETIME: Duration = Duration::from_secs(20);
 
 // ============================================================================
 // Backend Process Management
@@ -1201,6 +1208,78 @@ fn check_backend_health_cmd(port: Option<u16>) -> bool {
     check_backend_health(p)
 }
 
+/// Update notice handed over by the hidden update-check page.
+///
+/// The check itself lives in `src-tauri/splash/update-check.html`: it fetches
+/// a static JSON manifest through the webview's network stack, which keeps the
+/// shell's "no HTTP client, no TLS crate" design intact (see the security
+/// notes in the README). This command is the native half of the flow — the
+/// dialog and the browser hand-off it performs are fully native and
+/// independent of the window that reported the notice.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateNotice {
+    /// Version the running build reports (`get_app_info`).
+    current_version: String,
+    /// Version advertised by the remote update manifest.
+    latest_version: String,
+    /// Where to send the user; must be http(s).
+    download_url: String,
+    /// Optional release notes shown inside the dialog.
+    #[serde(default)]
+    notes: String,
+}
+
+/// Shows a native "new version available" dialog; on confirmation opens the
+/// download page in the system browser.
+#[tauri::command]
+fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
+    // Only ever hand http(s) URLs to the OS browser, same rule as
+    // `open_external_link`: a manifest pointing at `file://` or a custom
+    // scheme handler is ignored rather than opened.
+    let download_url = match notice.download_url.parse::<tauri::Url>() {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+        _ => {
+            log::warn!("[update] ignoring update notice: download URL is not http(s)");
+            return;
+        }
+    };
+
+    let mut message = format!(
+        "新版本 {} 已发布（当前版本 {}）。\n\n是否前往下载页面？",
+        notice.latest_version, notice.current_version
+    );
+    let notes = notice.notes.trim();
+    if !notes.is_empty() {
+        message.push_str(&format!("\n\n更新内容：\n{}", notes));
+    }
+
+    app_handle
+        .dialog()
+        .message(message)
+        .title("发现新版本")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "前往下载".to_string(),
+            "稍后再说".to_string(),
+        ))
+        .show(move |go_download| {
+            if go_download {
+                open_external_link(&app_handle, download_url.as_str());
+            }
+        });
+}
+
+/// Called by the hidden update-check page once its check has settled (a newer
+/// version was found and the dialog shown, there was nothing to do, or the
+/// check failed). Closes the hidden window; any dialog it opened is native
+/// and independent of this window.
+#[tauri::command]
+fn update_check_finished(app_handle: AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("update-check") {
+        let _ = window.close();
+    }
+}
+
 // ============================================================================
 // Main Entry
 // ============================================================================
@@ -1536,6 +1615,47 @@ fn main() {
                 });
             }
 
+            // ----------------------------------------------------------------
+            // Hidden update-check window (方案 C: 版本检查 + 跳转下载页).
+            //
+            // The check lives in src-tauri/splash/update-check.html: it
+            // fetches a static JSON manifest through the webview's network
+            // stack — keeping the shell's "no HTTP client, no TLS crate"
+            // design intact — and invokes `notify_update_available` only
+            // when the manifest advertises a newer version.
+            //
+            // Why a hidden window instead of the splash page: on warm starts
+            // the backend binds its port almost immediately and the
+            // health-check thread navigates the main window away within the
+            // first second, which would cut any in-flight splash-page fetch
+            // short. This window is invisible and independent of the main
+            // window's navigation, so the check runs to completion on every
+            // launch without delaying startup.
+            if let Err(e) = WebviewWindowBuilder::new(
+                app,
+                "update-check",
+                WebviewUrl::App("update-check.html".into()),
+            )
+            .visible(false)
+            .skip_taskbar(true)
+            .build()
+            {
+                // Best-effort by design: a failed update check must never
+                // block the app from starting.
+                log::warn!("[update] could not open the update-check window: {}", e);
+            } else {
+                // Safety net: the page closes itself via
+                // `update_check_finished` when the check settles; this bound
+                // keeps a hung fetch from leaking a hidden webview.
+                let app_handle = app_handle.clone();
+                thread::spawn(move || {
+                    thread::sleep(UPDATE_CHECK_MAX_LIFETIME);
+                    if let Some(w) = app_handle.get_webview_window("update-check") {
+                        let _ = w.close();
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1543,9 +1663,16 @@ fn main() {
             restart_backend_cmd,
             get_app_info,
             check_backend_health_cmd,
+            notify_update_available,
+            update_check_finished,
         ])
         .on_window_event(|window, event| {
             let app_handle = window.app_handle().clone();
+            // Auxiliary windows (the hidden update-check webview) neither own
+            // the window state nor the app's lifetime; only "main" does.
+            if window.label() != "main" {
+                return;
+            }
             match event {
                 tauri::WindowEvent::CloseRequested { .. } => {
                     save_window_state(&app_handle);

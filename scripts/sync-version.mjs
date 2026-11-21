@@ -6,9 +6,10 @@
  *   node scripts/sync-version.mjs           # derive from `git describe --tags --abbrev=0`
  *   node scripts/sync-version.mjs 1.2.3     # explicit version (CI uses this on tag pushes)
  *
- * It writes the resolved version into package.json, src-tauri/Cargo.toml and
- * src-tauri/tauri.conf.json so every installer carries the tag it was built
- * from. The Rust binary additionally embeds git metadata at compile time in
+ * It writes the resolved version into package.json, src-tauri/Cargo.toml,
+ * src-tauri/tauri.conf.json and latest.json (the update-check manifest the
+ * splash page polls) so every installer carries the tag it was built from.
+ * The Rust binary additionally embeds git metadata at compile time in
  * src-tauri/build.rs, so `get_app_info` stays accurate even if these files are
  * stale.
  */
@@ -71,5 +72,9 @@ patch(
 );
 
 patch('src-tauri/tauri.conf.json', /("version"\s*:\s*")[^"]*(")/, `$1${version}$2`);
+
+// The update-check manifest: bumping it here (and pushing to the branch the
+// splash page polls) is what tells installed clients a new version exists.
+patch('latest.json', /("version"\s*:\s*")[^"]*(")/, `$1${version}$2`);
 
 console.log(`[sync-version] done: ${version}`);

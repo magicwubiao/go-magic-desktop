@@ -23,6 +23,7 @@ server setup, no extra configuration.
 - [Building & Packaging](#building--packaging)
 - [How It Works](#how-it-works)
 - [Configuration](#configuration)
+- [Update Check](#update-check)
 - [Security Model](#security-model)
 - [Logs & Troubleshooting](#logs--troubleshooting)
 - [CI/CD & Releases](#cicd--releases)
@@ -291,6 +292,8 @@ Auto-selected available ports: `5000 → 5001 → 5002 → 5003 → 5004 → 808
 | `restart_backend_cmd` | Restart the backend process |
 | `get_app_info` | Get version, git commit, build time, and profile |
 | `check_backend_health_cmd` | Check whether the backend is healthy |
+| `notify_update_available` | Show the native "new version" dialog and open the download page |
+| `update_check_finished` | Close the hidden update-check window (invoked by the page itself) |
 
 ---
 
@@ -314,13 +317,57 @@ Bundle-time metadata (`APP_VERSION`, `GIT_COMMIT`, `GIT_BRANCH`, `BUILD_TIME`,
 
 ---
 
+## Update Check
+
+The app ships a lightweight "check & prompt" update flow — no in-place updater,
+no extra dependencies:
+
+1. On every launch the shell opens a **hidden window** (`update-check`) that
+   loads `src-tauri/splash/update-check.html`.
+2. The page fetches a static JSON manifest — by default `latest.json` from this
+   repository's `main` branch — and compares its `version` against the running
+   build (via `get_app_info`).
+3. If a newer version exists, a **native dialog** offers to open the manifest's
+   `downloadUrl` in the system browser. Otherwise the page stays silent.
+
+A hidden window is used instead of the splash page because on warm starts the
+backend binds its port almost immediately and the main window navigates away
+within the first second, which would cut a splash-page fetch short. The check
+therefore never delays startup and still runs to completion on every launch; a
+20s lifetime bound closes the hidden window even when the network hangs.
+
+### Shipping an update
+
+1. Tag a release — CI builds the installers and creates the GitHub Release
+   (see [CI/CD & Releases](#cicd--releases)).
+2. Bump `latest.json` (`npm run version:sync` patches it together with the
+   other version fields), optionally fill in `notes`, and push it to the branch
+   the manifest URL points at. Installed clients then prompt on their next
+   launch.
+
+### Customizing
+
+- **Manifest URL** — edit `UPDATE_MANIFEST_URL` in
+  `src-tauri/splash/update-check.html`. Any URL returning the JSON works:
+  GitHub Raw, your own server, OSS/CDN. Users in slow-GitHub regions should be
+  pointed at a mirror.
+- **Manifest format** — `{"version": "1.2.3", "downloadUrl": "https://…", "notes": "…"}`
+  Versions compare per numeric segment (`v` prefixes tolerated); `downloadUrl`
+  must be http(s) or the prompt is skipped.
+- The whole check is best-effort: network failures, a missing manifest, or a
+  hung fetch never block startup or surface errors.
+
+---
+
 ## Security Model
 
 - **CSP** — script/style/connect targets are restricted to the app itself and the
   local backend, plus `object-src 'none'`, `base-uri 'self'`, and
   `frame-ancestors 'none'`. `'unsafe-eval'` is disallowed; `'unsafe-inline'` is
   still required by the bundled UI's inline script/style, and `img-src` also allows
-  `https:` and `data:`.
+  `https:` and `data:`. `connect-src` additionally allows `https:` so the hidden
+  update-check window can fetch the update manifest — this applies to local pages
+  only, never to the remote backend UI.
 - **Port binding** — the backend only ever binds `127.0.0.1`.
 - **Permissions** — `src-tauri/capabilities/default.json` grants only `core:default`,
   and only to **local** content. The Go Magic UI is served by the bundled backend
@@ -399,8 +446,9 @@ all keep a placeholder `0.0.0`.
 At build time, `build.rs` runs `git describe --tags` to embed the real version
 (plus git commit, branch, build time, and profile) into the binary. On tag pushes,
 CI runs `scripts/sync-version.mjs <tag>` to stamp the same version into
-`package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, so the
-installer carries it too. Run the same script locally to preview.
+`package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and
+`latest.json` (the update-check manifest), so the installer carries it too. Run
+the same script locally to preview.
 
 ### Release flow
 

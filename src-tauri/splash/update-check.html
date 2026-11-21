@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Go Magic Update Check</title>
+</head>
+<body>
+  <!--
+    隐藏的更新检查页（方案 C：版本检查 + 跳转下载页）。
+
+    之所以不用 splash 页做这件事：后端热启动时端口几乎立即绑定，
+    splash 页存活时间极短，fetch 大概率被随后的导航打断。这个页面由
+    Rust 侧在 setup 阶段以隐藏窗口（visible: false）加载，完全独立于
+    主窗口的生命周期，每次启动都能可靠跑完检查。
+
+    流程：fetch 静态清单（UPDATE_MANIFEST_URL）→ 与 get_app_info 的
+    当前版本比对 → 有新版才调用 notify_update_available（原生弹窗 +
+    打开系统浏览器下载页）。无论结果如何最后调用 update_check_finished
+    让 Rust 侧关闭本隐藏窗口（另有超时兜底）。
+
+    外壳刻意不引入 HTTP 客户端与 TLS crate（见 README 安全模型），
+    远程请求全部由 webview 网络栈完成；任何失败都静默跳过。
+  -->
+  <script>
+    (function () {
+      // 更新清单地址：任何返回 JSON 的静态 URL 均可（GitHub Raw、自有
+      // 服务器、OSS/CDN）。发版时由 `scripts/sync-version.mjs` 同步
+      // latest.json 的 version 字段，推送到该 URL 指向的分支即可触达用户。
+      var UPDATE_MANIFEST_URL =
+        "https://raw.githubusercontent.com/magicwubiao/go-magic-desktop/main/latest.json";
+      // 拉取上限 8 秒；兜底关闭由 Rust 侧的 UPDATE_CHECK_MAX_LIFETIME 控制。
+      var FETCH_TIMEOUT_MS = 8000;
+
+      var tauri = window.__TAURI__;
+      var canInvoke = tauri && tauri.core && typeof tauri.core.invoke === "function";
+
+      function finish() {
+        if (canInvoke) {
+          tauri.core.invoke("update_check_finished").catch(function () {});
+        }
+      }
+
+      // "1.2.3" / "v1.2.3" -> [1, 2, 3]；非数字段按 0 处理。
+      function parseVersion(v) {
+        return String(v || "")
+          .trim()
+          .replace(/^v/i, "")
+          .split(".")
+          .map(function (n) { return parseInt(n, 10) || 0; });
+      }
+
+      function isNewer(latest, current) {
+        var a = parseVersion(latest);
+        var b = parseVersion(current);
+        var len = Math.max(a.length, b.length);
+        for (var i = 0; i < len; i++) {
+          var diff = (a[i] || 0) - (b[i] || 0);
+          if (diff !== 0) return diff > 0;
+        }
+        return false;
+      }
+
+      function check() {
+        if (!canInvoke) return;
+
+        tauri.core
+          .invoke("get_app_info")
+          .then(function (info) {
+            if (!info || !info.version) return;
+            // 时间戳参数绕过 CDN 缓存，确保拿到最新清单。
+            return fetch(UPDATE_MANIFEST_URL + "?t=" + Date.now(), {
+              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            })
+              .then(function (res) {
+                if (!res.ok) return;
+                return res.json();
+              })
+              .then(function (manifest) {
+                if (!manifest || typeof manifest.version !== "string") return;
+                if (!isNewer(manifest.version, info.version)) return;
+                return tauri.core.invoke("notify_update_available", {
+                  notice: {
+                    currentVersion: info.version,
+                    latestVersion: manifest.version,
+                    downloadUrl:
+                      typeof manifest.downloadUrl === "string"
+                        ? manifest.downloadUrl
+                        : "",
+                    notes: typeof manifest.notes === "string" ? manifest.notes : "",
+                  },
+                });
+              });
+          })
+          .catch(function () {
+            // 网络不通、清单缺失等——静默跳过。
+          })
+          .then(finish, finish);
+      }
+
+      check();
+    })();
+  </script>
+</body>
+</html>

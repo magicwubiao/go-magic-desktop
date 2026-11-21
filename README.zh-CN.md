@@ -22,6 +22,7 @@ Go Magic Desktop 将 Go Magic Web 应用封装为原生、跨平台的桌面应�
 - [构建与打包](#构建与打包)
 - [工作原理](#工作原理)
 - [配置](#配置)
+- [更新检查](#更新检查)
 - [安全模型](#安全模型)
 - [日志与排查](#日志与排查)
 - [CI/CD 与发布](#cicd-与发布)
@@ -288,6 +289,8 @@ Tauri 应用自动编排整个生命周期：
 | `restart_backend_cmd` | 重启后端进程 |
 | `get_app_info` | 获取版本、git 提交、构建时间与配置 |
 | `check_backend_health_cmd` | 检查后端是否健康 |
+| `notify_update_available` | 弹出原生"发现新版本"对话框并打开下载页 |
+| `update_check_finished` | 关闭隐藏的更新检查窗口（由检查页自身调用） |
 
 ---
 
@@ -309,11 +312,50 @@ Tauri 应用自动编排整个生命周期：
 
 ---
 
+## 更新检查
+
+应用内置一套轻量的"检查 + 提示"更新流程——不引入就地更新器，也不增加依赖：
+
+1. 每次启动时，外壳会打开一个**隐藏窗口**（`update-check`），加载
+   `src-tauri/splash/update-check.html`。
+2. 该页面拉取一份静态 JSON 清单（默认为本仓库 `main` 分支的 `latest.json`），
+   并将其 `version` 与当前运行版本（通过 `get_app_info`）比对。
+3. 若存在更新版本，则弹出**原生对话框**，确认后在系统浏览器中打开清单里的
+   `downloadUrl`；否则保持静默。
+
+之所以用隐藏窗口而不是 splash 页：后端热启动时端口几乎立即绑定，主窗口会在
+第一秒内完成导航，splash 页里的 fetch 大概率被中途打断。隐藏窗口不延迟启动、
+不受主窗口导航影响，每次启动都能完整跑完检查；另有 20 秒生命周期兜底，即使
+网络挂起也会自动关闭。
+
+### 发布新版本
+
+1. 打标签发布——CI 会构建安装包并创建 GitHub Release
+   （见 [CI/CD 与发布](#cicd-与发布)）。
+2. 更新 `latest.json`（`npm run version:sync` 会与其他版本字段一并写入），
+   按需填写 `notes`，然后推送到清单 URL 指向的分支。已安装的客户端会在下次
+   启动时收到提示。
+
+### 自定义
+
+- **清单地址** —— 修改 `src-tauri/splash/update-check.html` 中的
+  `UPDATE_MANIFEST_URL`。任何返回 JSON 的静态 URL 均可：GitHub Raw、自有
+  服务器、OSS/CDN。国内用户建议指向镜像地址。
+- **清单格式** —— `{"version": "1.2.3", "downloadUrl": "https://…", "notes": "…"}`
+  版本按数字段逐位比较（容忍 `v` 前缀）；`downloadUrl` 必须是 http(s)，
+  否则跳过提示。
+- 整个检查是尽力而为：网络失败、清单缺失或请求挂起都不会阻塞启动、也不会
+  报错打扰用户。
+
+---
+
 ## 安全模型
 
 - **CSP** —— 脚本/样式/连接目标仅限应用自身与本地后端，并附 `object-src 'none'`、
   `base-uri 'self'`、`frame-ancestors 'none'`。不允许 `'unsafe-eval'`；捆绑 UI 的
   内联脚本/样式仍需要 `'unsafe-inline'`，`img-src` 还额外允许 `https:` 与 `data:`。
+  `connect-src` 额外允许 `https:`，供隐藏的更新检查窗口拉取更新清单——仅对本地
+  页面生效，远程后端 UI 不受该 CSP 约束。
 - **端口绑定** —— 后端只绑定 `127.0.0.1`。
 - **权限** —— `src-tauri/capabilities/default.json` 仅授予 `core:default`，且仅对
   **本地**内容生效。Go Magic UI 由捆绑后端通过 `http://127.0.0.1:<port>` 提供，
@@ -385,8 +427,9 @@ winget install Microsoft.WebView2
 
 构建时，`build.rs` 运行 `git describe --tags` 将真实版本（以及 git 提交、分支、
 构建时间与配置）嵌入二进制。CI 标签推送时执行 `scripts/sync-version.mjs <tag>`，
-将同一版本写入 `package.json`、`src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json`，
-使安装包也携带正确版本。本地可用同一脚本预览效果。
+将同一版本写入 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`
+与 `latest.json`（更新检查清单），使安装包也携带正确版本。本地可用同一脚本
+预览效果。
 
 ### 发布流程
 
