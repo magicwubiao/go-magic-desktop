@@ -34,9 +34,11 @@
       var tauri = window.__TAURI__;
       var canInvoke = tauri && tauri.core && typeof tauri.core.invoke === "function";
 
-      function finish() {
+      function finish(status) {
         if (canInvoke) {
-          tauri.core.invoke("update_check_finished").catch(function () {});
+          tauri.core
+            .invoke("update_check_finished", { status: status })
+            .catch(function () {});
         }
       }
 
@@ -66,35 +68,41 @@
         tauri.core
           .invoke("get_app_info")
           .then(function (info) {
-            if (!info || !info.version) return;
+            if (!info || !info.version) throw new Error("no app version");
             // 时间戳参数绕过 CDN 缓存，确保拿到最新清单。
             return fetch(UPDATE_MANIFEST_URL + "?t=" + Date.now(), {
               signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
             })
               .then(function (res) {
-                if (!res.ok) return;
+                if (!res.ok) throw new Error("manifest HTTP " + res.status);
                 return res.json();
               })
               .then(function (manifest) {
-                if (!manifest || typeof manifest.version !== "string") return;
-                if (!isNewer(manifest.version, info.version)) return;
-                return tauri.core.invoke("notify_update_available", {
-                  notice: {
-                    currentVersion: info.version,
-                    latestVersion: manifest.version,
-                    downloadUrl:
-                      typeof manifest.downloadUrl === "string"
-                        ? manifest.downloadUrl
-                        : "",
-                    notes: typeof manifest.notes === "string" ? manifest.notes : "",
-                  },
-                });
+                if (!manifest || typeof manifest.version !== "string") {
+                  throw new Error("bad manifest");
+                }
+                if (!isNewer(manifest.version, info.version)) {
+                  return "up-to-date";
+                }
+                return tauri.core
+                  .invoke("notify_update_available", {
+                    notice: {
+                      currentVersion: info.version,
+                      latestVersion: manifest.version,
+                      downloadUrl:
+                        typeof manifest.downloadUrl === "string"
+                          ? manifest.downloadUrl
+                          : "",
+                      notes: typeof manifest.notes === "string" ? manifest.notes : "",
+                    },
+                  })
+                  .then(function () { return "updated"; });
               });
           })
-          .catch(function () {
-            // 网络不通、清单缺失等——静默跳过。
-          })
-          .then(finish, finish);
+          .then(finish, function () {
+            // 网络不通、清单缺失等——手动检查时原生侧会提示失败。
+            finish("error");
+          });
       }
 
       check();

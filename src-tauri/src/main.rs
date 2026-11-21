@@ -17,6 +17,7 @@ use std::sync::{Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::webview::NewWindowResponse;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
@@ -276,6 +277,11 @@ const BACKEND_STDERR_TAIL_LINES: usize = 20;
 /// fetch — the page's own fetch timeout is 8s — can never leak a hidden
 /// webview for the whole session.
 const UPDATE_CHECK_MAX_LIFETIME: Duration = Duration::from_secs(20);
+/// Whether the running update check was started manually from the 检查更新
+/// menu item (vs the automatic launch-time check). Only a manual check gets
+/// "up to date" / "failed" feedback dialogs — an automatic one stays silent
+/// when there is nothing to report.
+static MANUAL_UPDATE_CHECK: AtomicBool = AtomicBool::new(false);
 
 // ============================================================================
 // Backend Process Management
@@ -1269,15 +1275,80 @@ fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
         });
 }
 
-/// Called by the hidden update-check page once its check has settled (a newer
-/// version was found and the dialog shown, there was nothing to do, or the
-/// check failed). Closes the hidden window; any dialog it opened is native
-/// and independent of this window.
+/// Called by the hidden update-check page once its check has settled:
+///
+/// - `"up-to-date"` — the manifest was fetched fine, but its version is not
+///   newer than the running build.
+/// - `"updated"` — a newer version was found and `notify_update_available`
+///   already showed the update dialog.
+/// - `"error"` — the check could not complete (network, bad manifest, ...).
+///
+/// Closes the hidden window. A *manual* check (菜单"检查更新...") also gets
+/// explicit feedback for `up-to-date`/`error`; an automatic launch-time check
+/// stays silent unless it found an update.
 #[tauri::command]
-fn update_check_finished(app_handle: AppHandle) {
+fn update_check_finished(app_handle: AppHandle, status: String) {
+    let manual = MANUAL_UPDATE_CHECK.swap(false, Ordering::SeqCst);
+
     if let Some(window) = app_handle.get_webview_window("update-check") {
         let _ = window.close();
     }
+
+    if !manual {
+        return;
+    }
+
+    match status.as_str() {
+        "up-to-date" => {
+            app_handle
+                .dialog()
+                .message(format!("当前已是最新版本（{}）。", env!("APP_VERSION")))
+                .title("检查更新")
+                .buttons(MessageDialogButtons::Ok)
+                .show(|_| {});
+        }
+        "error" => {
+            app_handle
+                .dialog()
+                .message("检查更新失败，请检查网络连接后重试。")
+                .title("检查更新")
+                .buttons(MessageDialogButtons::Ok)
+                .show(|_| {});
+        }
+        // "updated": the update dialog is already on screen — nothing more to say.
+        _ => {}
+    }
+}
+
+/// Opens the hidden update-check window (`splash/update-check.html`) and arms
+/// the 20s lifetime bound. Shared by the automatic launch-time check and the
+/// "检查更新..." menu item; any window left over from a previous check is
+/// destroyed first so the page always starts fresh.
+fn spawn_update_check(app_handle: &AppHandle) -> Result<(), tauri::Error> {
+    if let Some(existing) = app_handle.get_webview_window("update-check") {
+        let _ = existing.destroy();
+    }
+
+    let result = WebviewWindowBuilder::new(
+        app_handle,
+        "update-check",
+        WebviewUrl::App("update-check.html".into()),
+    )
+    .visible(false)
+    .skip_taskbar(true)
+    .build();
+
+    if result.is_ok() {
+        let handle = app_handle.clone();
+        thread::spawn(move || {
+            thread::sleep(UPDATE_CHECK_MAX_LIFETIME);
+            if let Some(w) = handle.get_webview_window("update-check") {
+                let _ = w.close();
+            }
+        });
+    }
+
+    result.map(|_| ())
 }
 
 // ============================================================================
@@ -1518,6 +1589,54 @@ fn main() {
                 }
             };
 
+            // ----------------------------------------------------------------
+            // Native 关于(A) dropdown menu (方案 C 的更新入口, per user request):
+            //
+            //   关于 Go Magic    — native dialog with version/commit/build time
+            //   检查更新...      — runs the update check on demand; unlike the
+            //                      automatic launch-time check it always gives
+            //                      feedback ("已是最新"/"检查失败"/更新弹窗)
+            //   ─────────────
+            //   退出 Go Magic    — shuts the backend down and exits (Alt+F4)
+            //
+            // Built best-effort: a menu error (e.g. an accelerator the native
+            // toolkit cannot parse) is logged, never fatal to startup.
+            let app_menu: tauri::Result<Menu<tauri::Wry>> = (|| {
+                let about_submenu =
+                    Submenu::with_id(app, "about_menu", "关于(&A)", true)?;
+                about_submenu.append(&MenuItem::with_id(
+                    app,
+                    "about_app",
+                    "关于 Go Magic",
+                    true,
+                    None::<&str>,
+                )?)?;
+                about_submenu.append(&MenuItem::with_id(
+                    app,
+                    "check_updates",
+                    "检查更新...",
+                    true,
+                    None::<&str>,
+                )?)?;
+                about_submenu.append(&PredefinedMenuItem::separator(app)?)?;
+                about_submenu.append(&MenuItem::with_id(
+                    app,
+                    "quit_app",
+                    "退出 Go Magic",
+                    true,
+                    Some("Alt+F4"),
+                )?)?;
+                Menu::with_items(app, &[&about_submenu])
+            })();
+            match app_menu {
+                Ok(menu) => {
+                    if let Err(e) = window.set_menu(Some(menu)) {
+                        log::warn!("[menu] failed to attach menu: {}", e);
+                    }
+                }
+                Err(e) => log::warn!("[menu] failed to build menu: {}", e),
+            }
+
             // Restore the maximized state that was saved with the window state.
             // Doing it here rather than through the builder also avoids the
             // "restore a monitor-sized plain window" trap: the window manager
@@ -1631,29 +1750,10 @@ fn main() {
             // short. This window is invisible and independent of the main
             // window's navigation, so the check runs to completion on every
             // launch without delaying startup.
-            if let Err(e) = WebviewWindowBuilder::new(
-                app,
-                "update-check",
-                WebviewUrl::App("update-check.html".into()),
-            )
-            .visible(false)
-            .skip_taskbar(true)
-            .build()
-            {
-                // Best-effort by design: a failed update check must never
-                // block the app from starting.
+            // Launch-time update check: best-effort by design — a failure here
+            // must never block the app from starting.
+            if let Err(e) = spawn_update_check(&app_handle) {
                 log::warn!("[update] could not open the update-check window: {}", e);
-            } else {
-                // Safety net: the page closes itself via
-                // `update_check_finished` when the check settles; this bound
-                // keeps a hung fetch from leaking a hidden webview.
-                let app_handle = app_handle.clone();
-                thread::spawn(move || {
-                    thread::sleep(UPDATE_CHECK_MAX_LIFETIME);
-                    if let Some(w) = app_handle.get_webview_window("update-check") {
-                        let _ = w.close();
-                    }
-                });
             }
 
             Ok(())
@@ -1666,6 +1766,45 @@ fn main() {
             notify_update_available,
             update_check_finished,
         ])
+        .on_menu_event(|app, event| {
+            match event.id().as_ref() {
+                "about_app" => {
+                    let about = format!(
+                        "Go Magic Desktop\n版本 {}（{}）\n构建时间：{}",
+                        env!("APP_VERSION"),
+                        option_env!("GIT_COMMIT").unwrap_or("unknown"),
+                        option_env!("BUILD_TIME").unwrap_or("unknown"),
+                    );
+                    app.dialog()
+                        .message(about)
+                        .title("关于 Go Magic")
+                        .buttons(MessageDialogButtons::Ok)
+                        .show(|_| {});
+                }
+                "check_updates" => {
+                    // The hidden window reports back through
+                    // `update_check_finished`, which shows the result dialog
+                    // because the manual flag is set.
+                    MANUAL_UPDATE_CHECK.store(true, Ordering::SeqCst);
+                    if let Err(e) = spawn_update_check(app) {
+                        MANUAL_UPDATE_CHECK.store(false, Ordering::SeqCst);
+                        log::warn!("[update] manual check failed to open window: {}", e);
+                        app.dialog()
+                            .message("检查更新失败，请稍后重试。")
+                            .title("检查更新")
+                            .buttons(MessageDialogButtons::Ok)
+                            .show(|_| {});
+                    }
+                }
+                "quit_app" => {
+                    // Same path as closing the main window: flag shutdown so
+                    // the supervisor does not restart the backend mid-exit.
+                    shutdown_backend();
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
         .on_window_event(|window, event| {
             let app_handle = window.app_handle().clone();
             // Auxiliary windows (the hidden update-check webview) neither own

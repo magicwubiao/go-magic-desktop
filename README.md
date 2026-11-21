@@ -336,6 +336,16 @@ within the first second, which would cut a splash-page fetch short. The check
 therefore never delays startup and still runs to completion on every launch; a
 20s lifetime bound closes the hidden window even when the network hangs.
 
+### Menu entry
+
+The main window also carries a native **关于(A)** dropdown menu:
+
+- **关于 Go Magic** — native dialog with version, git commit and build time
+- **检查更新...** — runs the same check on demand; unlike the automatic
+  launch-time check it always reports its result ("已是最新版本" / "检查失败" /
+  the update dialog)
+- **退出 Go Magic** (Alt+F4) — shuts the backend down and exits
+
 ### Shipping an update
 
 1. Tag a release — CI builds the installers and creates the GitHub Release
