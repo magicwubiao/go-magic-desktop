@@ -1182,6 +1182,9 @@ fn trigger_backend_restart(app_handle: &AppHandle) {
     // A restart takes seconds; never block the IPC thread on it.
     let _ = app_handle.emit("backend-restarting", serde_json::json!({}));
 
+    // The thread needs an owned handle: a spawned closure must be `'static`,
+    // and a `&AppHandle` borrowed from the caller would not outlive it.
+    let app_handle = app_handle.clone();
     thread::spawn(move || {
         // Serialise with the supervisor. Without this, a manual restart landing
         // on the same tick as an automatic one spawns two backends, which then
@@ -1924,11 +1927,17 @@ fn main() {
                             return;
                         }
                         // Keep the checkmark in sync with the window state.
+                        // Bind the guard explicitly: `state.lock()` as an
+                        // if-let scrutinee extends its temporary past `state`'s
+                        // drop (E0597), and the codebase treats poisoning as
+                        // recoverable (see RESTART_GUARD).
                         let state = app.state::<Mutex<Option<CheckMenuItem<tauri::Wry>>>>();
-                        if let Ok(guard) = state.lock() {
-                            if let Some(item) = guard.as_ref() {
-                                let _ = item.set_checked(pinned);
-                            }
+                        let guard = match state.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        if let Some(item) = guard.as_ref() {
+                            let _ = item.set_checked(pinned);
                         }
                     }
                 }
