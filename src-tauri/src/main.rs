@@ -1602,35 +1602,41 @@ fn main() {
             // Built best-effort: a menu error (e.g. an accelerator the native
             // toolkit cannot parse) is logged, never fatal to startup.
             let app_menu: tauri::Result<Menu<tauri::Wry>> = (|| {
+                let handle = &app_handle;
                 let about_submenu =
-                    Submenu::with_id(app, "about_menu", "关于(&A)", true)?;
+                    Submenu::with_id(handle, "about_menu", "关于(&A)", true)?;
                 about_submenu.append(&MenuItem::with_id(
-                    app,
+                    handle,
                     "about_app",
                     "关于 Go Magic",
                     true,
                     None::<&str>,
                 )?)?;
                 about_submenu.append(&MenuItem::with_id(
-                    app,
+                    handle,
                     "check_updates",
                     "检查更新...",
                     true,
                     None::<&str>,
                 )?)?;
-                about_submenu.append(&PredefinedMenuItem::separator(app)?)?;
+                about_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
                 about_submenu.append(&MenuItem::with_id(
-                    app,
+                    handle,
                     "quit_app",
                     "退出 Go Magic",
                     true,
                     Some("Alt+F4"),
                 )?)?;
-                Menu::with_items(app, &[&about_submenu])
+                Menu::with_items(handle, &[&about_submenu])
             })();
             match app_menu {
                 Ok(menu) => {
-                    if let Err(e) = window.set_menu(Some(menu)) {
+                    // App-wide menu: `AppHandle::set_menu` takes the bare
+                    // `Menu` (not an `Option<Menu>`) and is the only variant
+                    // that works on macOS, where a menu cannot be attached to
+                    // a single window. Windows without an explicit menu — the
+                    // main window here — pick it up automatically.
+                    if let Err(e) = app_handle.set_menu(menu) {
                         log::warn!("[menu] failed to attach menu: {}", e);
                     }
                 }
