@@ -17,7 +17,7 @@ use std::sync::{Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::webview::NewWindowResponse;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
@@ -1165,8 +1165,10 @@ fn get_backend_port() -> Option<u16> {
         .and_then(|g| g.as_ref().map(|s| s.port))
 }
 
-#[tauri::command]
-fn restart_backend_cmd(app_handle: AppHandle) {
+/// Shared restart entry point: fires `backend-restarting` and restarts the
+/// backend on a background thread. Used by both the `restart_backend_cmd` IPC
+/// command and the 帮助(H) → 重启后端服务 menu item.
+fn trigger_backend_restart(app_handle: &AppHandle) {
     let Ok(resource_dir) = app_handle.path().resource_dir() else {
         log::error!("[backend] restart failed: resource directory is unavailable");
         return;
@@ -1186,6 +1188,11 @@ fn restart_backend_cmd(app_handle: AppHandle) {
 
         restart_backend(&app_handle, &resource_dir);
     });
+}
+
+#[tauri::command]
+fn restart_backend_cmd(app_handle: AppHandle) {
+    trigger_backend_restart(&app_handle);
 }
 
 #[tauri::command]
@@ -1590,32 +1597,107 @@ fn main() {
             };
 
             // ----------------------------------------------------------------
-            // Native 关于(A) dropdown menu (方案 C 的更新入口, per user request):
+            // Native menu bar (per user mockup):
             //
-            //   关于 Go Magic    — native dialog with version/commit/build time
-            //   检查更新...      — runs the update check on demand; unlike the
-            //                      automatic launch-time check it always gives
-            //                      feedback ("已是最新"/"检查失败"/更新弹窗)
-            //   ─────────────
-            //   退出 Go Magic    — shuts the backend down and exits (Alt+F4)
+            //   编辑(E)  窗口(W)  帮助(H)  关于(A)
             //
-            // Built best-effort: a menu error (e.g. an accelerator the native
-            // toolkit cannot parse) is logged, never fatal to startup.
+            // Predefined items run natively; on Windows cut/copy/paste/
+            // select_all and minimize/maximize are supported, while undo/redo/
+            // fullscreen are not (docs.rs: "Windows / Linux: Unsupported") —
+            // those are deliberately left out instead of shipping no-ops.
+            // Custom items dispatch through `.on_menu_event` below. Built
+            // best-effort: a menu error is logged, never fatal to startup.
             let app_menu: tauri::Result<Menu<tauri::Wry>> = (|| {
                 let handle = &app_handle;
-                let about_submenu =
-                    Submenu::with_id(handle, "about_menu", "关于(&A)", true)?;
+
+                // 编辑(E): standard clipboard actions, native accelerators.
+                let edit_submenu = Submenu::with_id(handle, "edit_menu", "编辑(&E)", true)?;
+                edit_submenu.append(&PredefinedMenuItem::cut(handle, Some("剪切(&T)"))?)?;
+                edit_submenu.append(&PredefinedMenuItem::copy(handle, Some("复制(&C)"))?)?;
+                edit_submenu.append(&PredefinedMenuItem::paste(handle, Some("粘贴(&P)"))?)?;
+                edit_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+                edit_submenu.append(&PredefinedMenuItem::select_all(handle, Some("全选(&A)"))?)?;
+
+                // 窗口(W): native window commands plus custom toggles.
+                let window_submenu = Submenu::with_id(handle, "window_menu", "窗口(&W)", true)?;
+                window_submenu.append(&PredefinedMenuItem::minimize(handle, Some("最小化(&N)"))?)?;
+                window_submenu.append(&PredefinedMenuItem::maximize(handle, Some("最大化(&M)"))?)?;
+                window_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+                // 置顶 is a toggle: a clone of the checkbox item is kept in
+                // managed state so the event handler can keep the checkmark in
+                // sync with the window's actual always-on-top flag.
+                let pin_item = CheckMenuItem::with_id(
+                    handle,
+                    "toggle_pin",
+                    "窗口置顶",
+                    true,
+                    false,
+                    None::<&str>,
+                )?;
+                app_handle.manage(Mutex::new(Some(pin_item.clone())));
+                window_submenu.append(&pin_item)?;
+                window_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+                window_submenu.append(&MenuItem::with_id(
+                    handle,
+                    "reload_page",
+                    "刷新页面(&R)",
+                    true,
+                    Some("F5"),
+                )?)?;
+
+                // 帮助(H): update check, diagnostics, external links.
+                let help_submenu = Submenu::with_id(handle, "help_menu", "帮助(&H)", true)?;
+                help_submenu.append(&MenuItem::with_id(
+                    handle,
+                    "check_updates",
+                    "检查更新...",
+                    true,
+                    None::<&str>,
+                )?)?;
+                help_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+                help_submenu.append(&MenuItem::with_id(
+                    handle,
+                    "open_log_dir",
+                    "打开日志目录",
+                    true,
+                    None::<&str>,
+                )?)?;
+                help_submenu.append(&MenuItem::with_id(
+                    handle,
+                    "open_data_dir",
+                    "打开数据目录",
+                    true,
+                    None::<&str>,
+                )?)?;
+                help_submenu.append(&MenuItem::with_id(
+                    handle,
+                    "restart_backend",
+                    "重启后端服务",
+                    true,
+                    None::<&str>,
+                )?)?;
+                help_submenu.append(&PredefinedMenuItem::separator(handle)?)?;
+                help_submenu.append(&MenuItem::with_id(
+                    handle,
+                    "open_docs",
+                    "使用文档",
+                    true,
+                    None::<&str>,
+                )?)?;
+                help_submenu.append(&MenuItem::with_id(
+                    handle,
+                    "open_homepage",
+                    "项目主页",
+                    true,
+                    None::<&str>,
+                )?)?;
+
+                // 关于(A): about dialog + quit.
+                let about_submenu = Submenu::with_id(handle, "about_menu", "关于(&A)", true)?;
                 about_submenu.append(&MenuItem::with_id(
                     handle,
                     "about_app",
                     "关于 Go Magic",
-                    true,
-                    None::<&str>,
-                )?)?;
-                about_submenu.append(&MenuItem::with_id(
-                    handle,
-                    "check_updates",
-                    "检查更新...",
                     true,
                     None::<&str>,
                 )?)?;
@@ -1627,7 +1709,11 @@ fn main() {
                     true,
                     Some("Alt+F4"),
                 )?)?;
-                Menu::with_items(handle, &[&about_submenu])
+
+                Menu::with_items(
+                    handle,
+                    &[&edit_submenu, &window_submenu, &help_submenu, &about_submenu],
+                )
             })();
             match app_menu {
                 Ok(menu) => {
@@ -1800,6 +1886,60 @@ fn main() {
                             .title("检查更新")
                             .buttons(MessageDialogButtons::Ok)
                             .show(|_| {});
+                    }
+                }
+                "toggle_pin" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let pinned = !window.is_always_on_top().unwrap_or(false);
+                        if let Err(e) = window.set_always_on_top(pinned) {
+                            log::warn!("[menu] failed to toggle always-on-top: {}", e);
+                            return;
+                        }
+                        // Keep the checkmark in sync with the window state.
+                        let state = app.state::<Mutex<Option<CheckMenuItem<tauri::Wry>>>>();
+                        if let Ok(guard) = state.lock() {
+                            if let Some(item) = guard.as_ref() {
+                                let _ = item.set_checked(pinned);
+                            }
+                        }
+                    }
+                }
+                "reload_page" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        if let Err(e) = window.eval("location.reload()") {
+                            log::warn!("[menu] failed to reload page: {}", e);
+                        }
+                    }
+                }
+                "open_log_dir" | "open_data_dir" => {
+                    let dir = if event.id().as_ref() == "open_log_dir" {
+                        app.path().app_log_dir()
+                    } else {
+                        app.path().app_data_dir()
+                    };
+                    match dir {
+                        Ok(dir) => {
+                            // The log dir may not exist yet on a fresh install;
+                            // opening a missing folder would silently no-op.
+                            if let Err(e) = std::fs::create_dir_all(&dir) {
+                                log::warn!("[menu] failed to create {:?}: {}", dir, e);
+                            }
+                            if let Err(e) = open::that(&dir) {
+                                log::warn!("[menu] failed to open {:?}: {}", dir, e);
+                            }
+                        }
+                        Err(e) => log::warn!("[menu] failed to resolve directory: {}", e),
+                    }
+                }
+                "restart_backend" => trigger_backend_restart(app),
+                "open_homepage" => {
+                    if let Err(e) = open::that("https://github.com/magicwubiao/go-magic-desktop") {
+                        log::warn!("[menu] failed to open homepage: {}", e);
+                    }
+                }
+                "open_docs" => {
+                    if let Err(e) = open::that("https://magictech.cc/docs.html") {
+                        log::warn!("[menu] failed to open docs: {}", e);
                     }
                 }
                 "quit_app" => {
