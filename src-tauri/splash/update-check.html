@@ -13,7 +13,7 @@
     Rust 侧在 setup 阶段以隐藏窗口（visible: false）加载，完全独立于
     主窗口的生命周期，每次启动都能可靠跑完检查。
 
-    流程：fetch 静态清单（UPDATE_MANIFEST_URL）→ 与 get_app_info 的
+    流程：fetch 静态清单（UPDATE_MANIFEST_URLS，逐源尝试）→ 与 get_app_info 的
     当前版本比对 → 有新版才调用 notify_update_available（原生弹窗 +
     打开系统浏览器下载页）。无论结果如何最后调用 update_check_finished
     让 Rust 侧关闭本隐藏窗口（另有超时兜底）。
@@ -26,9 +26,15 @@
       // 更新清单地址：任何返回 JSON 的静态 URL 均可（GitHub Raw、自有
       // 服务器、OSS/CDN）。发版时由 `scripts/sync-version.mjs` 同步
       // latest.json 的 version 字段，推送到该 URL 指向的分支即可触达用户。
-      var UPDATE_MANIFEST_URL =
-        "https://raw.githubusercontent.com/magicwubiao/go-magic-desktop/main/latest.json";
-      // 拉取上限 8 秒；兜底关闭由 Rust 侧的 UPDATE_CHECK_MAX_LIFETIME 控制。
+      // 注意分支名必须与仓库默认分支一致（当前为 master）。
+      // 按顺序依次尝试：jsDelivr 对国内网络友好，GitHub Raw 作为兜底；
+      // 任一源成功即停止，全部失败才上报 error。
+      var UPDATE_MANIFEST_URLS = [
+        "https://cdn.jsdelivr.net/gh/magicwubiao/go-magic-desktop@master/latest.json",
+        "https://fastly.jsdelivr.net/gh/magicwubiao/go-magic-desktop@master/latest.json",
+        "https://raw.githubusercontent.com/magicwubiao/go-magic-desktop/master/latest.json",
+      ];
+      // 每个源的拉取上限 8 秒；兜底关闭由 Rust 侧的 UPDATE_CHECK_MAX_LIFETIME 控制。
       var FETCH_TIMEOUT_MS = 8000;
 
       var tauri = window.__TAURI__;
@@ -62,6 +68,22 @@
         return false;
       }
 
+      // 逐个源尝试拉取清单；某个源网络失败（含超时）则换下一个。
+      function fetchManifest(urls) {
+        if (!urls.length) {
+          return Promise.reject(new Error("all manifest sources failed"));
+        }
+        var url = urls[0] + "?t=" + Date.now();
+        return fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+          .then(function (res) {
+            if (!res.ok) throw new Error("manifest HTTP " + res.status);
+            return res.json();
+          })
+          .catch(function () {
+            return fetchManifest(urls.slice(1));
+          });
+      }
+
       function check() {
         if (!canInvoke) return;
 
@@ -69,35 +91,27 @@
           .invoke("get_app_info")
           .then(function (info) {
             if (!info || !info.version) throw new Error("no app version");
-            // 时间戳参数绕过 CDN 缓存，确保拿到最新清单。
-            return fetch(UPDATE_MANIFEST_URL + "?t=" + Date.now(), {
-              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-            })
-              .then(function (res) {
-                if (!res.ok) throw new Error("manifest HTTP " + res.status);
-                return res.json();
-              })
-              .then(function (manifest) {
-                if (!manifest || typeof manifest.version !== "string") {
-                  throw new Error("bad manifest");
-                }
-                if (!isNewer(manifest.version, info.version)) {
-                  return "up-to-date";
-                }
-                return tauri.core
-                  .invoke("notify_update_available", {
-                    notice: {
-                      currentVersion: info.version,
-                      latestVersion: manifest.version,
-                      downloadUrl:
-                        typeof manifest.downloadUrl === "string"
-                          ? manifest.downloadUrl
-                          : "",
-                      notes: typeof manifest.notes === "string" ? manifest.notes : "",
-                    },
-                  })
-                  .then(function () { return "updated"; });
-              });
+            return fetchManifest(UPDATE_MANIFEST_URLS).then(function (manifest) {
+              if (!manifest || typeof manifest.version !== "string") {
+                throw new Error("bad manifest");
+              }
+              if (!isNewer(manifest.version, info.version)) {
+                return "up-to-date";
+              }
+              return tauri.core
+                .invoke("notify_update_available", {
+                  notice: {
+                    currentVersion: info.version,
+                    latestVersion: manifest.version,
+                    downloadUrl:
+                      typeof manifest.downloadUrl === "string"
+                        ? manifest.downloadUrl
+                        : "",
+                    notes: typeof manifest.notes === "string" ? manifest.notes : "",
+                  },
+                })
+                .then(function () { return "updated"; });
+            });
           })
           .then(finish, function () {
             // 网络不通、清单缺失等——手动检查时原生侧会提示失败。
