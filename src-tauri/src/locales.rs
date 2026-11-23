@@ -61,6 +61,12 @@ pub(crate) struct ShellText {
     pub(crate) dialog_update_notes: &'static str,
     pub(crate) dialog_update_go: &'static str,
     pub(crate) dialog_update_later: &'static str,
+    // `BackendError` Display strings — surfaced through startup error dialogs
+    // and logs, so they localize like every other user-facing string.
+    pub(crate) error_no_port: &'static str,
+    pub(crate) error_backend_not_found: &'static str,
+    pub(crate) error_spawn_failed: &'static str,
+    pub(crate) error_health_check_timeout: &'static str,
 }
 
 pub(crate) const ZH_TEXT: ShellText = ShellText {
@@ -104,6 +110,10 @@ pub(crate) const ZH_TEXT: ShellText = ShellText {
     dialog_update_notes: "\n\n更新内容：\n{}",
     dialog_update_go: "前往下载",
     dialog_update_later: "稍后再说",
+    error_no_port: "未找到可用端口",
+    error_backend_not_found: "未找到后端程序",
+    error_spawn_failed: "启动后端失败：{}",
+    error_health_check_timeout: "后端健康检查超时，请确认后端是否正常工作",
 };
 
 pub(crate) const EN_TEXT: ShellText = ShellText {
@@ -147,6 +157,11 @@ pub(crate) const EN_TEXT: ShellText = ShellText {
     dialog_update_notes: "\n\nWhat's new:\n{}",
     dialog_update_go: "Download",
     dialog_update_later: "Later",
+    error_no_port: "No available port found",
+    error_backend_not_found: "Backend executable not found",
+    error_spawn_failed: "Failed to start backend: {}",
+    error_health_check_timeout:
+        "Backend health check timed out, please verify if backend is working correctly",
 };
 
 /// Minimal `format!` substitute: fills `{}` placeholders left to right. Needed
@@ -247,6 +262,10 @@ mod tests {
             assert!(!table.dialog_update_notes.is_empty());
             assert!(!table.dialog_update_go.is_empty());
             assert!(!table.dialog_update_later.is_empty());
+            assert!(!table.error_no_port.is_empty());
+            assert!(!table.error_backend_not_found.is_empty());
+            assert!(!table.error_spawn_failed.is_empty());
+            assert!(!table.error_health_check_timeout.is_empty());
         }
     }
 
@@ -267,6 +286,7 @@ mod tests {
             ),
             (ZH_TEXT.dialog_service_stopped, EN_TEXT.dialog_service_stopped),
             (ZH_TEXT.dialog_about_body, EN_TEXT.dialog_about_body),
+            (ZH_TEXT.error_spawn_failed, EN_TEXT.error_spawn_failed),
         ];
         for (zh, en) in pairs {
             assert_eq!(zh.matches("{}").count(), en.matches("{}").count(), "{zh:?} vs {en:?}");

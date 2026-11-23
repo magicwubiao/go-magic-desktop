@@ -809,14 +809,18 @@ enum BackendError {
 
 impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // These strings reach the startup error dialog and logs, so they come
+        // from the shell text tables (see `locales.rs`) rather than being
+        // hardcoded English. The dialogs for BackendNotFound build richer
+        // messages in `setup`, so this short form is a fallback.
+        let text = shell_text();
         match self {
-            BackendError::NoPortAvailable => write!(f, "No available port found"),
-            BackendError::BackendNotFound => write!(f, "Backend executable not found"),
-            BackendError::SpawnFailed(msg) => write!(f, "Failed to start backend: {}", msg),
-            BackendError::HealthCheckTimeout => write!(
-                f,
-                "Backend health check timed out, please verify if backend is working correctly"
-            ),
+            BackendError::NoPortAvailable => write!(f, "{}", text.error_no_port),
+            BackendError::BackendNotFound => write!(f, "{}", text.error_backend_not_found),
+            BackendError::SpawnFailed(msg) => {
+                write!(f, "{}", fill(text.error_spawn_failed, &[msg.as_str()]))
+            }
+            BackendError::HealthCheckTimeout => write!(f, "{}", text.error_health_check_timeout),
         }
     }
 }

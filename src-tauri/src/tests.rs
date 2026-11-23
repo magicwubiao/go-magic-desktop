@@ -146,21 +146,26 @@ mod tests {
 
     #[test]
     fn backend_errors_have_readable_messages() {
+        // Compare against the shell text tables instead of hardcoded strings:
+        // the Display impl localizes, so the expected text depends on the
+        // machine's OS language.
+        let text = shell_text();
         assert_eq!(
             BackendError::NoPortAvailable.to_string(),
-            "No available port found"
+            text.error_no_port
         );
         assert_eq!(
             BackendError::BackendNotFound.to_string(),
-            "Backend executable not found"
+            text.error_backend_not_found
         );
         assert_eq!(
             BackendError::SpawnFailed("boom".into()).to_string(),
-            "Failed to start backend: boom"
+            fill(text.error_spawn_failed, &["boom"])
         );
-        assert!(BackendError::HealthCheckTimeout
-            .to_string()
-            .contains("timed out"));
+        assert_eq!(
+            BackendError::HealthCheckTimeout.to_string(),
+            text.error_health_check_timeout
+        );
     }
 
     #[test]
