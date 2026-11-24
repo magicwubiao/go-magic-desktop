@@ -2,17 +2,16 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Build script: the version is derived entirely from git tags — no version
-/// field in any config file is treated as the source of truth.
+/// Build script: version metadata for the binary.
 ///
 /// Exported env vars (read via `env!()` / `option_env!()` in main.rs):
-///   - APP_VERSION   : version from `git describe --tags` (e.g. "1.2.3"), or "0.0.0-dev"
+///   - APP_VERSION   : see `app_version()` below, or "0.0.0-dev"
 ///   - GIT_COMMIT    : short git commit hash (empty if git is unavailable)
 ///   - GIT_BRANCH    : current branch name ("detached" on a detached HEAD)
 ///   - BUILD_TIME    : RFC3339 UTC build timestamp
 ///   - BUILD_PROFILE : "debug" or "release"
 fn main() {
-    println!("cargo:rustc-env=APP_VERSION={}", git_version());
+    println!("cargo:rustc-env=APP_VERSION={}", app_version());
     println!("cargo:rustc-env=GIT_COMMIT={}", git_commit());
     println!("cargo:rustc-env=GIT_BRANCH={}", git_branch());
     println!("cargo:rustc-env=BUILD_TIME={}", now_utc());
@@ -56,10 +55,23 @@ fn git(args: &[&str]) -> Option<String> {
     }
 }
 
-/// Version from the most recent git tag (`git describe --tags --abbrev=0`).
-/// Strips a leading `v`, so tag `v1.2.3` becomes version `1.2.3`.
-/// Falls back to `0.0.0-dev` when there are no tags (local dev before a release).
-fn git_version() -> String {
+/// Version reported by the binary (`APP_VERSION`).
+///
+/// Priority:
+/// 1. `CARGO_PKG_VERSION` when CI stamped it to a real version — tag builds run
+///    `scripts/sync-version.mjs <tag>`, which writes the tag into Cargo.toml.
+///    This is authoritative on release builds. `git describe` alone cannot be
+///    trusted: when two tags point at the same commit (v0.6.23 and v0.6.24
+///    did) it silently resolves to the *older* one, so the "0.6.24" installers
+///    reported themselves as 0.6.23 and nagged about updates forever.
+/// 2. `git describe --tags --abbrev=0` for local builds (Cargo.toml still at
+///    the 0.0.0 placeholder).
+/// 3. "0.0.0-dev" when there are no tags at all (fresh clones).
+fn app_version() -> String {
+    let pkg = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    if !pkg.is_empty() && pkg != "0.0.0" {
+        return pkg;
+    }
     git(&["describe", "--tags", "--abbrev=0"])
         .map(|tag| tag.strip_prefix('v').unwrap_or(&tag).to_string())
         .unwrap_or_else(|| "0.0.0-dev".to_string())

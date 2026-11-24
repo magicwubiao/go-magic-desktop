@@ -457,12 +457,15 @@ Versions are derived **entirely from git tags** — no version field in any conf
 file is maintained by hand. `package.json`, `Cargo.toml`, and `tauri.conf.json`
 all keep a placeholder `0.0.0`.
 
-At build time, `build.rs` runs `git describe --tags` to embed the real version
-(plus git commit, branch, build time, and profile) into the binary. On tag pushes,
-CI runs `scripts/sync-version.mjs <tag>` to stamp the same version into
-`package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and
-`latest.json` (the update-check manifest), so the installer carries it too. Run
-the same script locally to preview.
+At build time, `build.rs` decides `APP_VERSION`: on tag pushes CI first runs
+`scripts/sync-version.mjs <tag>` to stamp the tag into `package.json`,
+`src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `latest.json` (the
+update-check manifest); `build.rs` then prefers the stamped `Cargo.toml`
+version. Local builds (where `Cargo.toml` is still the `0.0.0` placeholder)
+fall back to `git describe --tags`. Preferring the stamped version matters:
+when two tags point at the same commit, `git describe` silently resolves to
+the *older* one — v0.6.23 and v0.6.24 shared a commit, so the "0.6.24"
+installers reported themselves as 0.6.23 and nagged about updates forever.
 
 ### Release flow
 

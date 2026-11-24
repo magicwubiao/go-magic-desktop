@@ -438,11 +438,14 @@ winget install Microsoft.WebView2
 版本号**完全由 git 标签派生**——不手动维护任何配置文件中的版本字段。
 `package.json`、`Cargo.toml` 和 `tauri.conf.json` 均保持占位符 `0.0.0`。
 
-构建时，`build.rs` 运行 `git describe --tags` 将真实版本（以及 git 提交、分支、
-构建时间与配置）嵌入二进制。CI 标签推送时执行 `scripts/sync-version.mjs <tag>`，
-将同一版本写入 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`
-与 `latest.json`（更新检查清单），使安装包也携带正确版本。本地可用同一脚本
-预览效果。
+构建时，`build.rs` 决定 `APP_VERSION`：CI 标签推送会先执行
+`scripts/sync-version.mjs <tag>` 把标签版本写入 `package.json`、
+`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 与 `latest.json`（更新检查
+清单），`build.rs` 优先采用 `Cargo.toml` 里已写入的真实版本；本地构建
+（`Cargo.toml` 仍是 `0.0.0`）则回退到 `git describe --tags`。**优先打过的
+版本号而不是 describe**，是因为同一提交上存在两个标签时 describe 会解析到
+较旧的那个（v0.6.23 与 v0.6.24 曾指向同一提交，导致"0.6.24"安装包自报
+0.6.23、无限提示更新）。
 
 ### 发布流程
 
