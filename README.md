@@ -330,6 +330,12 @@ no extra dependencies:
    version it sees, compared against the running build (via `get_app_info`).
 3. If a newer version exists, a **native dialog** offers to open the manifest's
    `downloadUrl` in the system browser. Otherwise the page stays silent.
+4. Once the user dismisses that dialog (either button), the shell records the
+   `(current -> latest)` pair in `update-notice.json` under the app data dir,
+   and the automatic launch-time check stays silent for that pair — no popup on
+   every start. The manual 检查更新 menu entry always prompts regardless, and
+   the record stops matching (so prompts resume) after the app is upgraded or
+   an even newer release ships.
 
 A hidden window is used instead of the splash page because on warm starts the
 backend binds its port almost immediately and the main window navigates away

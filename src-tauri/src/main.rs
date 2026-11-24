@@ -1255,6 +1255,64 @@ struct UpdateNotice {
     notes: String,
 }
 
+/// A "稍后" record: the user has already seen the update dialog for this
+/// (current -> latest) pair and dismissed it.
+///
+/// The automatic launch-time check must not re-prompt for the same pair on
+/// every start — once dismissed, it stays silent until either side of the pair
+/// changes (a newer release ships, or the user actually upgraded, which moves
+/// `current_version`). The manual 检查更新 menu item ignores this record and
+/// always shows the dialog.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DeferredUpdateNotice {
+    current_version: String,
+    latest_version: String,
+}
+
+/// Path of the deferral record (next to the persisted window state).
+fn deferred_notice_path(app_handle: &AppHandle) -> Option<PathBuf> {
+    app_handle
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("update-notice.json"))
+}
+
+/// Loads the deferral record; a missing or corrupt file means "no deferral".
+fn load_deferred_notice(app_handle: &AppHandle) -> Option<DeferredUpdateNotice> {
+    let path = deferred_notice_path(app_handle)?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str(&raw) {
+        Ok(deferred) => Some(deferred),
+        Err(e) => {
+            log::warn!("[update] ignoring corrupt update-notice.json: {}", e);
+            None
+        }
+    }
+}
+
+/// Persists the deferral record; best-effort, failures are only logged (the
+/// worst case is the dialog coming back on the next launch, which is harmless).
+fn save_deferred_notice(app_handle: &AppHandle, deferred: &DeferredUpdateNotice) {
+    let Some(path) = deferred_notice_path(app_handle) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            log::warn!("[update] could not create {}: {}", dir.display(), e);
+            return;
+        }
+    }
+    match serde_json::to_string_pretty(deferred) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json + "\n") {
+                log::warn!("[update] could not write {}: {}", path.display(), e);
+            }
+        }
+        Err(e) => log::warn!("[update] could not serialize deferral: {}", e),
+    }
+}
+
 /// Shows a native "new version available" dialog; on confirmation opens the
 /// download page in the system browser.
 #[tauri::command]
@@ -1270,6 +1328,22 @@ fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
         }
     };
 
+    // The automatic launch-time check stays quiet for a pair the user already
+    // dismissed; a manual 检查更新 always shows the dialog on purpose.
+    if MANUAL_UPDATE_CHECK.load(Ordering::SeqCst) {
+        log::info!("[update] manual check: prompting regardless of deferral");
+    } else if load_deferred_notice(&app_handle).is_some_and(|deferred| {
+        deferred.current_version == notice.current_version
+            && deferred.latest_version == notice.latest_version
+    }) {
+        log::info!(
+            "[update] skipping automatic prompt: {} -> {} was deferred by the user",
+            notice.current_version,
+            notice.latest_version
+        );
+        return;
+    }
+
     let text = shell_text();
 
     let mut message = fill(
@@ -1281,6 +1355,10 @@ fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
         message.push_str(&fill(text.dialog_update_notes, &[notes]));
     }
 
+    let deferred = DeferredUpdateNotice {
+        current_version: notice.current_version.clone(),
+        latest_version: notice.latest_version.clone(),
+    };
     app_handle
         .dialog()
         .message(message)
@@ -1290,6 +1368,11 @@ fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
             text.dialog_update_later.to_string(),
         ))
         .show(move |go_download| {
+            // Record the pair whichever button was pressed: both mean "the
+            // user has seen this update". Once they actually install it, the
+            // running version changes and the record no longer matches, so
+            // the next new release prompts again.
+            save_deferred_notice(&app_handle, &deferred);
             if go_download {
                 open_external_link(&app_handle, download_url.as_str());
             }
