@@ -324,9 +324,10 @@ no extra dependencies:
 
 1. On every launch the shell opens a **hidden window** (`update-check`) that
    loads `src-tauri/splash/update-check.html`.
-2. The page fetches a static JSON manifest — by default `latest.json` from this
-   repository's `main` branch — and compares its `version` against the running
-   build (via `get_app_info`).
+2. The page fetches the update manifest from several sources in parallel — the
+   GitHub Releases API (authoritative, never cached) plus `latest.json` on
+   `master` via jsDelivr/Raw (fast in mainland China) — and takes the **highest**
+   version it sees, compared against the running build (via `get_app_info`).
 3. If a newer version exists, a **native dialog** offers to open the manifest's
    `downloadUrl` in the system browser. Otherwise the page stays silent.
 
@@ -348,19 +349,22 @@ The main window also carries a native **关于(A)** dropdown menu:
 
 ### Shipping an update
 
-1. Tag a release — CI builds the installers and creates the GitHub Release
-   (see [CI/CD & Releases](#cicd--releases)).
-2. Bump `latest.json` (`npm run version:sync` patches it together with the
-   other version fields), optionally fill in `notes`, and push it to the branch
-   the manifest URL points at. Installed clients then prompt on their next
-   launch.
+1. Tag a release — CI builds the installers, creates the GitHub Release, and
+   **publishes `latest.json` on `master`** (with the tag version, the release
+   page as `downloadUrl`, and the release body as `notes`), then purges the
+   jsDelivr cache. See `publish-manifest` in `.github/workflows/build.yml`.
+   Installed clients then prompt on their next launch — no manual step.
+2. Non-tag builds never touch the manifest, so a broken master build can't
+   advertise itself.
 
 ### Customizing
 
-- **Manifest URL** — edit `UPDATE_MANIFEST_URL` in
-  `src-tauri/splash/update-check.html`. Any URL returning the JSON works:
-  GitHub Raw, your own server, OSS/CDN. Users in slow-GitHub regions should be
-  pointed at a mirror.
+- **Manifest sources** — edit `MANIFEST_SOURCES` in
+  `src-tauri/splash/update-check.html`. Each entry is `{ url, timeoutMs }`; the
+  page fetches all of them and trusts the highest version, so a stale CDN can
+  only under-report, never hide a release. Any URL returning the JSON below (or
+  GitHub's `/releases/latest` payload) works: GitHub Raw, your own server,
+  OSS/CDN.
 - **Manifest format** — `{"version": "1.2.3", "downloadUrl": "https://…", "notes": "…"}`
   Versions compare per numeric segment (`v` prefixes tolerated); `downloadUrl`
   must be http(s) or the prompt is skipped.

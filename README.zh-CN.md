@@ -318,8 +318,9 @@ Tauri 应用自动编排整个生命周期：
 
 1. 每次启动时，外壳会打开一个**隐藏窗口**（`update-check`），加载
    `src-tauri/splash/update-check.html`。
-2. 该页面拉取一份静态 JSON 清单（默认为本仓库 `main` 分支的 `latest.json`），
-   并将其 `version` 与当前运行版本（通过 `get_app_info`）比对。
+2. 该页面**并发**拉取多个更新清单源——GitHub Releases API（权威、无缓存）
+   加上 `master` 分支的 `latest.json`（经 jsDelivr / Raw，国内可达性好），
+   取其中**最高**的版本，与当前运行版本（通过 `get_app_info`）比对。
 3. 若存在更新版本，则弹出**原生对话框**，确认后在系统浏览器中打开清单里的
    `downloadUrl`；否则保持静默。
 
@@ -339,17 +340,20 @@ Tauri 应用自动编排整个生命周期：
 
 ### 发布新版本
 
-1. 打标签发布——CI 会构建安装包并创建 GitHub Release
-   （见 [CI/CD 与发布](#cicd-与发布)）。
-2. 更新 `latest.json`（`npm run version:sync` 会与其他版本字段一并写入），
-   按需填写 `notes`，然后推送到清单 URL 指向的分支。已安装的客户端会在下次
-   启动时收到提示。
+1. 打标签发布——CI 会构建安装包、创建 GitHub Release，并把 `latest.json`
+   **自动发布到 `master`**（写入标签版本、以 Release 页为 `downloadUrl`、
+   以 Release 正文为 `notes`），随后清理 jsDelivr 缓存。见
+   `.github/workflows/build.yml` 的 `publish-manifest` 任务。已安装的客户端
+   下次启动即可收到提示，无需人工干预。
+2. 非标签构建不会改动清单，因此 master 上的坏构建不会把自己"报"成新版本。
 
 ### 自定义
 
-- **清单地址** —— 修改 `src-tauri/splash/update-check.html` 中的
-  `UPDATE_MANIFEST_URL`。任何返回 JSON 的静态 URL 均可：GitHub Raw、自有
-  服务器、OSS/CDN。国内用户建议指向镜像地址。
+- **清单来源** —— 修改 `src-tauri/splash/update-check.html` 中的
+  `MANIFEST_SOURCES`。每项形如 `{ url, timeoutMs }`；页面会全部拉取并采信
+  最高版本，因此 CDN 陈旧只会"少数"，不会漏掉已发布的新版本。任何返回下述
+  JSON（或 GitHub `/releases/latest` 结构）的 URL 均可：GitHub Raw、自有
+  服务器、OSS/CDN。
 - **清单格式** —— `{"version": "1.2.3", "downloadUrl": "https://…", "notes": "…"}`
   版本按数字段逐位比较（容忍 `v` 前缀）；`downloadUrl` 必须是 http(s)，
   否则跳过提示。

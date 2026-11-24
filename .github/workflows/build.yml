@@ -44,15 +44,17 @@ jobs:
         with:
           go-version: '1.22'
 
-      # On tag push, inject the tag version into tauri.conf.json so the
-      # installer package carries the correct version. build.rs picks up
-      # the version from git tags automatically for the binary itself.
-      - name: Inject tag version into tauri.conf.json
+      # On tag push, stamp the tag version into package.json, Cargo.toml and
+      # tauri.conf.json so the installer package carries the correct version.
+      # build.rs picks up the version from git tags automatically for the
+      # binary itself. This is a build-workspace-only edit: latest.json is
+      # published separately by the `release` job, because only a push to the
+      # manifest branch reaches installed clients.
+      - name: Stamp tag version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          node -e "const fs=require('fs');const f='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(f,'utf8'));c.version='${TAG_VERSION}';fs.writeFileSync(f,JSON.stringify(c,null,2)+'\n')"
-          echo "Injected version ${TAG_VERSION} into tauri.conf.json"
+          node scripts/sync-version.mjs "$TAG_VERSION"
         shell: bash
 
       - uses: actions/checkout@v4
@@ -150,3 +152,61 @@ jobs:
           files: release-assets/*
           generate_release_notes: true
           fail_on_unmatched_files: false
+
+  # Publishes latest.json on the manifest branch. Without this the update
+  # manifest would keep whatever version it was last committed with, and every
+  # installed client would answer "already up to date" forever — no matter how
+  # many releases ship.
+  publish-manifest:
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Write latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          NOTES="$(gh release view "$RELEASE_TAG" --json body -q .body 2>/dev/null || true)"
+
+          node -e '
+            const fs = require("fs");
+            const [version, notes] = process.argv.slice(1);
+            const repo = process.env.GITHUB_REPOSITORY;
+            const tag = process.env.RELEASE_TAG;
+            const manifest = {
+              version,
+              downloadUrl: `https://github.com/${repo}/releases/tag/${tag}`,
+              notes: (notes || "").trim().slice(0, 500),
+            };
+            fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2) + "\n");
+          ' "$VERSION" "$NOTES"
+
+          cat latest.json
+
+      - name: Commit and push manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest.json
+          if git diff --cached --quiet; then
+            echo "latest.json already points at this release; nothing to push."
+            exit 0
+          fi
+          git commit -m "chore(release): latest.json -> ${RELEASE_TAG} [skip ci]"
+          git push origin HEAD:master
+
+      # jsDelivr caches branch files for up to a day, so the freshly pushed
+      # manifest would otherwise stay invisible for a while.
+      - name: Purge jsDelivr cache
+        run: |
+          curl -sS --max-time 30 \
+            "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@master/latest.json" || true

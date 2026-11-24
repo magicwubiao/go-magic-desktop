@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
-  "downloadUrl": "https://github.com/magicwubiao/go-magic-desktop/releases/latest",
-  "notes": ""
+  "version": "0.6.24",
+  "downloadUrl": "https://github.com/magicwubiao/go-magic-desktop/releases/tag/v0.6.24",
+  "notes": "https://github.com/magicwubiao/go-magic-desktop/compare/v0.6.12...v0.6.24"
 }
