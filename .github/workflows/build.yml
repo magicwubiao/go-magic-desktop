@@ -13,6 +13,14 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
+  # Successive pushes to the same ref cancel superseded builds, so only the
+  # HEAD commit gets the full multi-platform build (re-pushing a release tag
+  # cancels the stale build the same way). Two caveats learned the hard way:
+  #   - updating a ref through the REST API (PATCH /git/refs) does NOT emit a
+  #     push event, so such updates never trigger this workflow — push via
+  #     git, or run it manually with workflow_dispatch;
+  #   - a manual workflow_dispatch on the same ref cancels an in-progress
+  #     push build, by design.
   cancel-in-progress: true
 
 jobs:
