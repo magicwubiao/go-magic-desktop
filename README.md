@@ -50,7 +50,7 @@ supervises it as a child process. That design buys three things:
 | **Embedded backend** | go-magic is auto-started, supervised, and shut down with the app |
 | **Instant window** | The UI appears immediately; health checks run on a background thread (no 60s startup freeze) |
 | **Smart ports** | Conflicts avoided via automatic port selection |
-| **Robust process mgmt** | stdout/stderr drained continuously (no pipe deadlock), child reaped on exit, whole process tree killed on Windows |
+| **Robust process mgmt** | stdout/stderr drained continuously (no pipe deadlock), graceful shutdown before force-kill, child reaped on exit, whole process tree killed on Windows |
 | **State persistence** | Window position, size, and maximized state restored across sessions |
 | **Hi-DPI aware** | Correct window sizing and placement under display scaling |
 | **External links** | `http`/`https` links open in the system browser; local ones stay in-app |
@@ -79,7 +79,7 @@ Grab the installer for your platform from the
 Open the app (window title: **"Go Magic"**). On startup it automatically:
 
 1. Locates the bundled `go-magic` backend executable.
-2. Picks an available port (default `5000`, falling back through `5001`/`5002`/…/`3000`).
+2. Picks an available port (preferred `5000 → 5001 → 5002`, otherwise a random high ephemeral port).
 3. Shows the window **immediately** while the backend starts in the background
    (health check budget: up to 60 seconds).
 4. Loads the Go Magic web UI as soon as the backend answers.
@@ -259,7 +259,7 @@ The Tauri app orchestrates the whole lifecycle automatically:
 
 ### Port priority
 
-Auto-selected available ports: `5000 → 5001 → 5002 → 5003 → 5004 → 8080 → 3000`.
+Preferred ports are tried in order: `5000 → 5001 → 5002`. If all are taken, up to 64 random candidates are probed in the high ephemeral range (`49152–65535`). The randomization keeps two instances (or anything else scanning a fixed list) from always settling on the same candidate — the old fixed fallbacks (`8080`/`3000`) sat exactly where dev servers like to bind.
 
 ### Process model
 

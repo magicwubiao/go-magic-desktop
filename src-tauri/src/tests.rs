@@ -115,10 +115,21 @@ mod tests {
     fn pick_available_port_returns_a_port_from_the_expected_range() {
         let port = pick_available_port().expect("expected at least one free port");
         assert!(
-            DEFAULT_PORTS.contains(&port) || (8000..9000).contains(&port),
+            DEFAULT_PORTS.contains(&port) || port >= EPHEMERAL_PORT_MIN,
             "unexpected port {}",
             port
         );
+    }
+
+    #[test]
+    fn port_rng_seed_is_never_zero() {
+        // xorshift degenerates from a zero seed; the seeding function must
+        // guarantee that cannot happen.
+        for _ in 0..1000 {
+            let mut rng = port_rng_seed();
+            assert_ne!(rng.0, 0);
+            assert_ne!(rng.next(), 0);
+        }
     }
 
     /// The port probe must claim the same socket the Go backend will bind (the
@@ -166,6 +177,71 @@ mod tests {
             BackendError::HealthCheckTimeout.to_string(),
             text.error_health_check_timeout
         );
+    }
+
+    /// A poisoned update manifest must not be able to point the download
+    /// button anywhere but the project's own GitHub releases.
+    #[test]
+    fn official_download_url_accepts_the_project_releases() {
+        for url in [
+            "https://github.com/magicwubiao/go-magic-desktop/releases/latest",
+            "https://github.com/magicwubiao/go-magic-desktop/releases",
+            "https://github.com/magicwubiao/go-magic-desktop/releases/tag/v1.2.3",
+        ] {
+            assert!(
+                official_download_url(url).is_some(),
+                "{} should be accepted",
+                url
+            );
+        }
+    }
+
+    #[test]
+    fn official_download_url_rejects_everything_else() {
+        for url in [
+            // Other hosts and schemes — including plain http and lookalike
+            // paths on other repos — fall back to the official URL.
+            "https://evil.example.com/go-magic-desktop/releases/latest",
+            "http://github.com/magicwubiao/go-magic-desktop/releases/latest",
+            "https://github.com/magicwubiao/other-repo/releases/latest",
+            "https://github.com/magicwubiao/go-magic-desktop/releasesfoo",
+            "https://github.com/magicwubiao/go-magic-desktop/wiki",
+            "file:///C:/Users/x/Downloads/setup.exe",
+            "ftp://github.com/magicwubiao/go-magic-desktop/releases/latest",
+            "not a url at all",
+            "",
+        ] {
+            assert!(
+                official_download_url(url).is_none(),
+                "{} should be rejected",
+                url
+            );
+        }
+    }
+
+    /// The navigation filter must admit exactly the local backend and the
+    /// shell's own pages — an exact host match, not a suffix match (a suffix
+    /// check would admit lookalikes such as `eviltauri.localhost`).
+    #[test]
+    fn shell_url_filter_admits_only_local_and_shell_pages() {
+        for url in [
+            "http://127.0.0.1:5000/app",
+            "http://localhost:5000/",
+            "http://tauri.localhost/index.html",
+            "tauri://localhost/index.html",
+        ] {
+            let parsed: tauri::Url = url.parse().unwrap();
+            assert!(is_shell_or_backend_url(&parsed), "{} should pass", url);
+        }
+
+        for url in [
+            "http://eviltauri.localhost/index.html",
+            "https://magictech.cc/docs.html",
+            "file:///C:/x",
+        ] {
+            let parsed: tauri::Url = url.parse().unwrap();
+            assert!(!is_shell_or_backend_url(&parsed), "{} should be blocked", url);
+        }
     }
 
     #[test]

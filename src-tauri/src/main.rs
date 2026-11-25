@@ -15,7 +15,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, TryLockError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::webview::NewWindowResponse;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -182,6 +182,43 @@ fn write_window_state(path: &Path, state: &WindowState) {
     }
 }
 
+/// Debounce window for the resize/move persistence path.
+const WINDOW_STATE_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Raised whenever an un-persisted geometry change is observed.
+static WINDOW_STATE_SAVE_DIRTY: AtomicBool = AtomicBool::new(false);
+/// True while a debounce timer thread is sleeping.
+static WINDOW_STATE_SAVE_TIMER_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Debounced [`save_window_state`] for the high-frequency Resized/Moved events.
+///
+/// Windows fires these events dozens of times per second while the user drags
+/// the window; a synchronous `fs::write` per event wastes I/O and briefly
+/// blocks the event loop on every tick. This coalesces each burst into a
+/// single write [`WINDOW_STATE_SAVE_DEBOUNCE`] after the last event: one timer
+/// thread waits it out, and any event landing during the wait only raises the
+/// dirty flag.
+///
+/// The immediate paths (window close, 菜单退出) call [`save_window_state`]
+/// directly, so a quit never depends on the debounce timer having fired.
+fn schedule_window_state_save(app_handle: &AppHandle) {
+    WINDOW_STATE_SAVE_DIRTY.store(true, Ordering::SeqCst);
+
+    // `swap(true)` returning true means a timer thread is already sleeping;
+    // it will observe the dirty flag before it exits, so no event is lost.
+    if WINDOW_STATE_SAVE_TIMER_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let app_handle = app_handle.clone();
+    thread::spawn(move || {
+        thread::sleep(WINDOW_STATE_SAVE_DEBOUNCE);
+        WINDOW_STATE_SAVE_TIMER_RUNNING.store(false, Ordering::SeqCst);
+        if WINDOW_STATE_SAVE_DIRTY.swap(false, Ordering::SeqCst) {
+            save_window_state(&app_handle);
+        }
+    });
+}
+
 fn load_window_state(app_handle: &AppHandle) -> WindowState {
     let Some(path) = get_window_state_path(app_handle) else {
         return WindowState::default();
@@ -250,7 +287,17 @@ fn reveal_maximized<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool
 // Constants Configuration
 // ============================================================================
 
-const DEFAULT_PORTS: &[u16] = &[5000, 5001, 5002, 5003, 5004, 8080, 3000];
+/// Ports the backend tries first, in this order. Kept short and stable so the
+/// documented default (`5000`) holds whenever it is free.
+const DEFAULT_PORTS: &[u16] = &[5000, 5001, 5002];
+/// Where the random fallback probing starts: the low end of the Windows
+/// dynamic-port range (macOS starts at 49152 too; Linux's 32768..60999
+/// contains it). Preferred over scanning a fixed low range — the old
+/// `8000..9000` / `3000` / `8080` fallbacks sit exactly where dev servers and
+/// proxies like to bind, so they both caused and collided with conflicts.
+const EPHEMERAL_PORT_MIN: u16 = 49152;
+/// How many random high ports to try before giving up.
+const EPHEMERAL_PORT_ATTEMPTS: u32 = 64;
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 /// Timeout for a single health probe: connect, write and read alike.
@@ -525,7 +572,51 @@ fn pick_available_port() -> Option<u16> {
             return Some(port);
         }
     }
-    (8000..9000).find(|&port| is_port_available(port))
+
+    // Randomised high ports instead of a fixed scan: two app instances (or an
+    // app and anything else that scans the same fixed range) picking the same
+    // predictable candidate is exactly the race that starts crash loops.
+    let mut rng = port_rng_seed();
+    let range = (u16::MAX - EPHEMERAL_PORT_MIN) as u64 + 1;
+    for _ in 0..EPHEMERAL_PORT_ATTEMPTS {
+        let port = EPHEMERAL_PORT_MIN + (rng.next() % range) as u16;
+        if is_port_available(port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// Seed for the port probe's tiny xorshift generator: time and pid mixed with
+/// splitmix64 constants. `std` only — no rand dependency for one number.
+fn port_rng_seed() -> XorShift64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let pid = u64::from(std::process::id());
+    let mut seed = nanos ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    // xorshift must never start from zero.
+    if seed == 0 {
+        seed = 0xA076_1D64_78BD_642F;
+    }
+    XorShift64(seed)
+}
+
+/// Minimal xorshift64* generator for the port probe. Not cryptographic — it
+/// only needs to scatter candidates over the ephemeral range.
+struct XorShift64(u64);
+
+impl XorShift64 {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -725,6 +816,21 @@ fn open_external_link(_app_handle: &AppHandle, url: &str) {
     if let Err(e) = open::that(parsed.as_str()) {
         eprintln!("Failed to open external link {}: {}", parsed, e);
     }
+}
+
+/// URL filter shared by `on_navigation` and `on_new_window`: only the local
+/// backend and the shell's own pages may load in the webview, everything else
+/// goes to the system browser.
+///
+/// The tauri host must match *exactly* (`tauri.localhost`): a suffix check
+/// such as `ends_with("tauri.localhost")` would also admit a lookalike like
+/// `eviltauri.localhost`.
+fn is_shell_or_backend_url(url: &tauri::Url) -> bool {
+    let host = url.host_str().unwrap_or("");
+    host == "127.0.0.1"
+        || host == "localhost"
+        || host == "tauri.localhost"
+        || url.scheme() == "tauri"
 }
 
 /// Filesystem locations that may hold the backend binary, in priority order.
@@ -929,7 +1035,70 @@ fn spawn_backend(resource_dir: &Path) -> Result<(Child, u16), BackendError> {
     Ok((child, port))
 }
 
-/// Terminates the backend and reaps it.
+/// Asks the backend nicely to shut down, via the console API.
+///
+/// The backend is a console program spawned with `CREATE_NO_WINDOW`, so it has
+/// its own (invisible) console. A packaged shell runs windowless and has no
+/// console of its own, so attaching to the child's console and broadcasting
+/// `CTRL_BREAK` reaches exactly the backend and the helper processes that
+/// inherited its console — nothing else on the machine. A Go backend handles
+/// the event like a Ctrl-C and gets a chance to flush its databases; one that
+/// does not handle it still dies with the default handler, i.e. no worse than
+/// the force kill that used to be the only path.
+///
+/// Returns `false` when the signal could not be delivered (typically `tauri
+/// dev`, where the shell already owns the developer's terminal console and
+/// attaching would fail or detach it) — the caller then goes straight to the
+/// force path, exactly like before.
+#[cfg(target_os = "windows")]
+fn request_graceful_console_shutdown(child_pid: u32) -> bool {
+    const CTRL_BREAK_EVENT: u32 = 1;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+        fn FreeConsole() -> i32;
+        fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+    }
+
+    // SAFETY: `SetConsoleCtrlHandler(None, TRUE)` installs the "ignore" handler
+    // for this process. It must run before the broadcast below, otherwise the
+    // CTRL_BREAK aimed at the backend would terminate the shell itself.
+    unsafe {
+        SetConsoleCtrlHandler(None, 1);
+    }
+
+    // SAFETY: attaching to the child's console. Fails cleanly when this process
+    // already has one (`tauri dev`) — the caller falls back to force kill and
+    // the developer's terminal is left untouched.
+    let attached = unsafe { AttachConsole(child_pid) } != 0;
+    if !attached {
+        return false;
+    }
+
+    // SAFETY: group id 0 broadcasts to every process attached to *our current*
+    // console, which is now the child's — the backend and its helpers.
+    let delivered = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) } != 0;
+
+    // Detach again; the shell has no business holding the child's console.
+    unsafe {
+        FreeConsole();
+    }
+
+    delivered
+}
+
+/// Terminates the backend: a graceful signal first, a tree force-kill after
+/// [`BACKEND_STOP_TIMEOUT`].
+///
+/// The graceful step gives the Go backend a chance to flush open databases and
+/// in-flight responses before it dies. A backend that ignores the signal — or
+/// an OS call that fails — ends up on the same force path as before, so the
+/// worst case is unchanged, it just starts a few seconds later.
 fn stop_backend() {
     // Recover from a poisoned lock instead of bailing out: leaving the child
     // running would keep it bound to the port after the app is gone.
@@ -950,19 +1119,58 @@ fn stop_backend() {
         state.start_time.elapsed().as_secs_f64()
     );
 
-    // On Windows the Go backend may have helper processes of its own; kill the
-    // whole tree so nothing is left running behind the app's back.
-    #[cfg(target_os = "windows")]
+    // ---- graceful attempt ------------------------------------------------
+    let mut signal_sent = false;
+
+    #[cfg(unix)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let _ = Command::new("taskkill")
-            .args(["/PID", &state.process.id().to_string(), "/T", "/F"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
+        // `Child::kill` is SIGKILL, which skips any cleanup the backend does.
+        // SIGTERM is what a shell Ctrl-C / service manager would send, so the
+        // exit path is the well-exercised one.
+        let pid = state.process.id() as libc::pid_t;
+        let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
+        signal_sent = sent == 0;
     }
 
-    let _ = state.process.kill();
+    #[cfg(target_os = "windows")]
+    {
+        signal_sent = request_graceful_console_shutdown(state.process.id());
+    }
+
+    // ---- grace period -----------------------------------------------------
+    let mut exited = false;
+    if signal_sent {
+        let deadline = Instant::now() + BACKEND_STOP_TIMEOUT;
+        loop {
+            match state.process.try_wait() {
+                Ok(Some(_)) => {
+                    exited = true;
+                    break;
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                _ => break,
+            }
+        }
+    }
+
+    // ---- force path -------------------------------------------------------
+    if !exited {
+        // On Windows the Go backend may have helper processes of its own; kill
+        // the whole tree so nothing is left running behind the app's back.
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            let _ = Command::new("taskkill")
+                .args(["/PID", &state.process.id().to_string(), "/T", "/F"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+
+        let _ = state.process.kill();
+    }
 
     // Reap the child, otherwise it stays around as a zombie.
     let deadline = Instant::now() + BACKEND_STOP_TIMEOUT;
@@ -1221,16 +1429,29 @@ fn get_app_info() -> serde_json::Value {
     })
 }
 
+/// Health check surfaced to the frontend.
+///
+/// Runs on the async runtime's blocking pool. A synchronous command would
+/// execute on the main thread, and a single slow probe (up to
+/// [`HEALTH_PROBE_TIMEOUT`], two seconds) would freeze the whole UI while the
+/// frontend waits for the answer.
 #[tauri::command]
-fn check_backend_health_cmd(port: Option<u16>) -> bool {
-    let p = port.unwrap_or_else(|| {
+async fn check_backend_health_cmd(port: Option<u16>) -> bool {
+    let port = port.unwrap_or_else(|| {
         BACKEND_STATE
             .lock()
             .ok()
             .and_then(|g| g.as_ref().map(|s| s.port))
             .unwrap_or(5000)
     });
-    check_backend_health(p)
+
+    match tauri::async_runtime::spawn_blocking(move || check_backend_health(port)).await {
+        Ok(healthy) => healthy,
+        Err(e) => {
+            log::warn!("[backend] health check task failed: {}", e);
+            false
+        }
+    }
 }
 
 /// Update notice handed over by the hidden update-check page.
@@ -1248,7 +1469,8 @@ struct UpdateNotice {
     current_version: String,
     /// Version advertised by the remote update manifest.
     latest_version: String,
-    /// Where to send the user; must be http(s).
+    /// Where to send the user; clamped to the official releases by
+    /// [`official_download_url`] before anything opens a browser.
     download_url: String,
     /// Optional release notes shown inside the dialog.
     #[serde(default)]
@@ -1313,18 +1535,57 @@ fn save_deferred_notice(app_handle: &AppHandle, deferred: &DeferredUpdateNotice)
     }
 }
 
+/// The only destination the update dialog may open in the system browser: the
+/// project's own GitHub releases.
+///
+/// The update manifest travels through shared CDNs (jsDelivr, GitHub raw)
+/// whose caches have historically served stale content — and could in
+/// principle serve tampered content. A poisoned manifest must therefore not be
+/// able to point the "go download" button at an attacker's page, so the URL is
+/// clamped to the official releases prefix; anything else falls back to the
+/// canonical URL with a warning.
+const OFFICIAL_RELEASES_URL: &str =
+    "https://github.com/magicwubiao/go-magic-desktop/releases/latest";
+/// Path prefix a manifest-provided download URL must sit under.
+const OFFICIAL_RELEASES_PATH_PREFIX: &str = "/magicwubiao/go-magic-desktop/releases";
+
+/// Validates a manifest-provided download URL against the official releases.
+///
+/// Returns `None` for anything that is not an `https://github.com` URL under
+/// the project's releases path — the caller substitutes the canonical URL.
+fn official_download_url(raw: &str) -> Option<tauri::Url> {
+    let url = raw.parse::<tauri::Url>().ok()?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return None;
+    }
+    let path = url.path();
+    if path != OFFICIAL_RELEASES_PATH_PREFIX
+        && !path.starts_with(&format!("{OFFICIAL_RELEASES_PATH_PREFIX}/"))
+    {
+        return None;
+    }
+    Some(url)
+}
+
 /// Shows a native "new version available" dialog; on confirmation opens the
 /// download page in the system browser.
 #[tauri::command]
 fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
-    // Only ever hand http(s) URLs to the OS browser, same rule as
-    // `open_external_link`: a manifest pointing at `file://` or a custom
-    // scheme handler is ignored rather than opened.
-    let download_url = match notice.download_url.parse::<tauri::Url>() {
-        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
-        _ => {
-            log::warn!("[update] ignoring update notice: download URL is not http(s)");
-            return;
+    // Only ever hand vetted https URLs to the OS browser: a manifest pointing
+    // at `file://`, a custom scheme handler, or someone else's site is replaced
+    // with the official releases URL rather than opened.
+    let download_url = match official_download_url(&notice.download_url) {
+        Some(url) => url,
+        None => {
+            log::warn!(
+                "[update] manifest download URL {:?} is outside the official releases; \
+                 using {} instead",
+                notice.download_url,
+                OFFICIAL_RELEASES_URL
+            );
+            OFFICIAL_RELEASES_URL
+                .parse::<tauri::Url>()
+                .expect("OFFICIAL_RELEASES_URL constant must be a valid URL")
         }
     };
 
@@ -1650,18 +1911,13 @@ fn main() {
             .on_navigation({
                 let app_handle_clone = app_handle.clone();
                 move |url| {
-                    let host = url.host_str().unwrap_or("");
                     // Allow local backend URLs and the shell's own splash page
                     // (`http://tauri.localhost` on Windows, `tauri://localhost`
-                    // on macOS/Linux).
-                    if host == "127.0.0.1"
-                        || host == "localhost"
-                        || host.ends_with("tauri.localhost")
-                        || url.scheme() == "tauri"
-                    {
+                    // on macOS/Linux); block other navigation and open it in
+                    // the system browser instead.
+                    if is_shell_or_backend_url(&url) {
                         return true;
                     }
-                    // Block other navigation and open in system browser instead
                     open_external_link(&app_handle_clone, url.as_str());
                     false
                 }
@@ -1670,16 +1926,9 @@ fn main() {
                 let app_handle_clone = app_handle.clone();
                 move |url, _features| {
                     // Intercept target="_blank" links and open in system browser
-                    let host = url.host_str().unwrap_or("");
-                    // Allow local backend URLs and the shell's own splash page
-                    if host == "127.0.0.1"
-                        || host == "localhost"
-                        || host.ends_with("tauri.localhost")
-                        || url.scheme() == "tauri"
-                    {
+                    if is_shell_or_backend_url(&url) {
                         return NewWindowResponse::Allow;
                     }
-                    // Open external links in system browser
                     open_external_link(&app_handle_clone, url.as_str());
                     NewWindowResponse::Deny
                 }
@@ -2062,8 +2311,11 @@ fn main() {
                     }
                 }
                 "quit_app" => {
-                    // Same path as closing the main window: flag shutdown so
-                    // the supervisor does not restart the backend mid-exit.
+                    // Same path as closing the main window: persist geometry
+                    // first (the menu path skips CloseRequested), then flag
+                    // shutdown so the supervisor does not restart the backend
+                    // mid-exit.
+                    save_window_state(app);
                     shutdown_backend();
                     app.exit(0);
                 }
@@ -2087,7 +2339,9 @@ fn main() {
                     app_handle.exit(0);
                 }
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
-                    save_window_state(&app_handle);
+                    // Debounced: these events fire in bursts while dragging, and
+                    // a synchronous write per event briefly blocks the loop.
+                    schedule_window_state_save(&app_handle);
                 }
                 _ => {}
             }

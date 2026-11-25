@@ -48,7 +48,12 @@
     <img class="logo" src="logo.svg" alt="Go Magic" />
     <div class="title">Go Magic</div>
     <div class="spinner"></div>
-    <div class="hint">正在启动服务，首次启动需要初始化，请稍候…</div>
+    <div class="hint" id="hint"></div>
   </div>
+  <!--
+    脚本外置（splash.js）：CSP 的 script-src 只有 'self'，内联脚本会被拦截。
+    页面文案跟随系统语言；启动进度来自外壳的 backend-status 事件。
+  -->
+  <script src="splash.js"></script>
 </body>
 </html>

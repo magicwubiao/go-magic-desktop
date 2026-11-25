@@ -40,6 +40,11 @@ sys-locale = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+[target.'cfg(unix)'.dependencies]
+# `kill(pid, SIGTERM)` for the graceful-shutdown path on macOS/Linux; std's
+# `Child::kill` is always SIGKILL.
+libc = "0.2"
+
 # No HTTP client of our own: the only request this shell makes is a plain-HTTP
 # `GET /health` against 127.0.0.1, which `check_backend_health` performs on a raw
 # socket. (tauri only pulls reqwest/hyper in for non-desktop targets, and no TLS
