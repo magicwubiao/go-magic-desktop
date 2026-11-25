@@ -1120,22 +1120,22 @@ fn stop_backend() {
     );
 
     // ---- graceful attempt ------------------------------------------------
-    let mut signal_sent = false;
+    // One `let` per platform: a shared `let mut x = false;` plus cfg blocks
+    // trips the `unused_assignments` lint on Windows, where the initializer is
+    // never read.
 
     #[cfg(unix)]
-    {
+    let signal_sent = {
         // `Child::kill` is SIGKILL, which skips any cleanup the backend does.
         // SIGTERM is what a shell Ctrl-C / service manager would send, so the
         // exit path is the well-exercised one.
         let pid = state.process.id() as libc::pid_t;
         let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
-        signal_sent = sent == 0;
-    }
+        sent == 0
+    };
 
     #[cfg(target_os = "windows")]
-    {
-        signal_sent = request_graceful_console_shutdown(state.process.id());
-    }
+    let signal_sent = request_graceful_console_shutdown(state.process.id());
 
     // ---- grace period -----------------------------------------------------
     let mut exited = false;
