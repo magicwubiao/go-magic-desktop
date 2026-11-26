@@ -50,8 +50,8 @@ impl Default for WindowState {
 /// friends do), and an infinite width or NaN position would poison the whole
 /// restore.
 pub(crate) fn sanitize_window_state(mut state: WindowState) -> WindowState {
-    state.width = finite_or(state.width, MIN_WINDOW_WIDTH);
-    state.height = finite_or(state.height, MIN_WINDOW_HEIGHT);
+    state.width = finite_or(state.width, MIN_WINDOW_WIDTH).max(MIN_WINDOW_WIDTH);
+    state.height = finite_or(state.height, MIN_WINDOW_HEIGHT).max(MIN_WINDOW_HEIGHT);
     if !state.x.is_some_and(|v| v.is_finite()) {
         state.x = None;
     }
