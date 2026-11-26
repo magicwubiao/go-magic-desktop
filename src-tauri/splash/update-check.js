@@ -53,6 +53,11 @@
 
   var tauri = window.__TAURI__;
   var canInvoke = tauri && tauri.core && typeof tauri.core.invoke === "function";
+  // 版本比较逻辑独立在 version-compare.js（见该文件头部注释）： splash 页以
+  // 两个 <script> 依序加载；逻辑与展示分离后，版本比较可以在 Node 里被
+  // tests/update-check.test.mjs 直接覆盖（历史上版本比对出错曾导致所有
+  // 客户端永远提示「已是最新版本」）。
+  var VersionCompare = window.VersionCompare;
 
   function finish(status) {
     if (canInvoke) {
@@ -60,31 +65,6 @@
         .invoke("update_check_finished", { status: status })
         .catch(function () {});
     }
-  }
-
-  // "1.2.3" / "v1.2.3" -> [1, 2, 3]；非数字段按 0 处理。
-  function parseVersion(v) {
-    return String(v || "")
-      .trim()
-      .replace(/^v/i, "")
-      .split(".")
-      .map(function (n) { return parseInt(n, 10) || 0; });
-  }
-
-  // 返回 >0 表示 a 比 b 新，0 表示相同，<0 表示更旧。
-  function compareVersions(a, b) {
-    var x = parseVersion(a);
-    var y = parseVersion(b);
-    var len = Math.max(x.length, y.length);
-    for (var i = 0; i < len; i++) {
-      var diff = (x[i] || 0) - (y[i] || 0);
-      if (diff !== 0) return diff;
-    }
-    return 0;
-  }
-
-  function isNewer(latest, current) {
-    return compareVersions(latest, current) > 0;
   }
 
   // 把两种清单格式归一化成 { version, downloadUrl, notes }：
@@ -157,10 +137,10 @@
 
       function onResult(manifest) {
         pending -= 1;
-        if (manifest && (!best || isNewer(manifest.version, best.version))) {
+        if (manifest && (!best || VersionCompare.isNewer(manifest.version, best.version))) {
           best = manifest;
         }
-        if (best && isNewer(best.version, currentVersion)) {
+        if (best && VersionCompare.isNewer(best.version, currentVersion)) {
           done();
         } else if (pending === 0) {
           done();
@@ -188,7 +168,7 @@
         if (!info || !info.version) throw new Error("no app version");
         return resolveLatest(info.version).then(function (manifest) {
           if (!manifest) throw new Error("bad manifest");
-          if (!isNewer(manifest.version, info.version)) {
+          if (!VersionCompare.isNewer(manifest.version, info.version)) {
             return "up-to-date";
           }
           return tauri.core

@@ -121,7 +121,12 @@ Closing the window quits the app — it saves the window state and gracefully st
 ```
 go-magic-desktop/
 ├── src-tauri/                  # Rust shell + backend supervision
-│   ├── src/main.rs             # Entry point (process management, window)
+│   ├── src/main.rs             # Entry point (builder, menu, IPC commands)
+│   ├── src/backend.rs          # Spawn / supervise / restart / stop the backend
+│   ├── src/window_state.rs     # Persisted window geometry
+│   ├── src/update.rs           # Hidden update-check window + dialog flow
+│   ├── src/locales.rs          # Shell text tables per OS language
+│   ├── src/tests.rs            # Rust unit tests
 │   ├── build.rs                # Embeds version / commit / build-time metadata
 │   ├── Cargo.toml              # Rust dependencies
 │   ├── tauri.conf.json         # Tauri config (window, CSP, bundling)
@@ -184,14 +189,15 @@ npm run dev
 
 ```bash
 npm test               # cargo test — unit tests for pure helpers
+npm run test:web       # node --test — update-check version comparison
 npm run fmt            # cargo fmt
 npm run clippy         # cargo clippy --all-targets -- -D warnings
 npm run version:sync   # stamp current git tag into package.json / Cargo.toml / tauri.conf.json
 ```
 
-CI enforces `cargo fmt --check` in a dedicated lint job. `cargo clippy` runs in
-**advisory** mode — drop `continue-on-error` in `.github/workflows/build.yml` once
-the tree is clippy-clean.
+CI enforces all four checks (`cargo fmt --check`, `cargo clippy -D warnings`,
+`cargo test`, `npm run test:web`) in a dedicated, **blocking** lint job that
+gates the multi-platform build.
 
 ---
 
@@ -440,9 +446,10 @@ System Preferences → Security & Privacy → Allow anyway.
 
 Automated builds run on GitHub Actions:
 
-- **lint** — `cargo fmt --check` over the whole tree (blocking).
+- **lint** — `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, and
+  the node tests for the update-check version comparison (all blocking).
 - **build** — multi-platform (Windows / macOS-x64 / macOS-arm64 / Linux) with npm +
-  cargo caching, unit tests and advisory clippy on the Linux leg, and a hard failure
+  cargo caching, gated on the lint job, and a hard failure
   when a leg produces no installer.
 - **release** — automated GitHub Release with checksums on tag push.
 

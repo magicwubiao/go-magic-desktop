@@ -8,6 +8,12 @@ mod tests {
     // crate root is *two* levels up. `use super::*` would only reach this file's
     // own module (which has no items) and every test would fail to resolve.
     use crate::*;
+    use std::io::{Read, Write};
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::path::Path;
+    use std::process::{Command, ExitStatus};
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn window_state_default_matches_constants() {
@@ -109,6 +115,19 @@ mod tests {
         });
         assert_eq!(large.width, 4000.0);
         assert_eq!(large.height, 3000.0);
+
+        // Infinities must not survive either: `max()` alone would keep them.
+        let infinite = sanitize_window_state(WindowState {
+            width: f64::INFINITY,
+            height: f64::NEG_INFINITY,
+            x: Some(f64::NAN),
+            y: Some(f64::INFINITY),
+            maximized: false,
+        });
+        assert_eq!(infinite.width, MIN_WINDOW_WIDTH);
+        assert_eq!(infinite.height, MIN_WINDOW_HEIGHT);
+        assert_eq!(infinite.x, None);
+        assert_eq!(infinite.y, None);
     }
 
     #[test]
@@ -240,7 +259,11 @@ mod tests {
             "file:///C:/x",
         ] {
             let parsed: tauri::Url = url.parse().unwrap();
-            assert!(!is_shell_or_backend_url(&parsed), "{} should be blocked", url);
+            assert!(
+                !is_shell_or_backend_url(&parsed),
+                "{} should be blocked",
+                url
+            );
         }
     }
 
@@ -413,5 +436,24 @@ mod tests {
         assert!(MAX_BACKEND_RESTARTS >= 3);
         assert!(AUTO_RESTART_BASE_DELAY < AUTO_RESTART_MAX_DELAY);
         assert!(BACKEND_STDERR_TAIL_LINES >= 5);
+    }
+
+    /// The update dialog must never render a release body taller than the
+    /// screen: long notes are cut off, and the cut respects char boundaries
+    /// (Chinese release notes are the common case here).
+    #[test]
+    fn update_notes_are_truncated_to_a_dialog_friendly_length() {
+        let short = "1. 修复若干问题";
+        assert_eq!(truncate_notes(short), short);
+
+        let long = "很长的更新说明".repeat(200);
+        let truncated = truncate_notes(&long);
+        assert!(truncated.chars().count() <= 601, "truncation failed");
+        assert!(truncated.ends_with('…'));
+
+        // The cut lands on a char boundary, never mid-glyph.
+        let multibyte: String = "汉".repeat(700);
+        let cut = truncate_notes(&multibyte);
+        assert_eq!(cut.chars().count(), 601);
     }
 }

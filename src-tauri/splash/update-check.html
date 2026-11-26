@@ -11,7 +11,9 @@
     检查逻辑在 update-check.js：由 Rust 侧在 setup 阶段以隐藏窗口
     （visible: false）加载，独立于主窗口生命周期，每次启动都能可靠跑完。
     脚本外置使 CSP 的 script-src 可以保持 'self'，不再需要 'unsafe-inline'。
+    version-compare.js 先于 update-check.js 加载，暴露 window.VersionCompare。
   -->
+  <script src="version-compare.js"></script>
   <script src="update-check.js"></script>
 </body>
 </html>

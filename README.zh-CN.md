@@ -120,7 +120,12 @@ Go Magic Desktop 将 Go Magic Web 应用封装为原生、跨平台的桌面应�
 ```
 go-magic-desktop/
 ├── src-tauri/                  # Rust 外壳 + 后端管控
-│   ├── src/main.rs             # 入口（进程管理、窗口）
+│   ├── src/main.rs             # 入口（builder、菜单、IPC 命令）
+│   ├── src/backend.rs          # 后端进程的启动 / 监督 / 重启 / 停止
+│   ├── src/window_state.rs     # 窗口几何状态持久化
+│   ├── src/update.rs           # 隐藏更新检查窗口 + 弹窗流程
+│   ├── src/locales.rs          # 按 OS 语言的壳层文案表
+│   ├── src/tests.rs            # Rust 单元测试
 │   ├── build.rs                # 嵌入版本 / 提交 / 构建时间元数据
 │   ├── Cargo.toml              # Rust 依赖
 │   ├── tauri.conf.json         # Tauri 配置（窗口、CSP、打包）
@@ -182,14 +187,15 @@ npm run dev
 
 ```bash
 npm test               # cargo test —— 纯函数单元测试
+npm run test:web       # node --test —— 更新检查的版本比较逻辑
 npm run fmt            # cargo fmt
 npm run clippy         # cargo clippy --all-targets -- -D warnings
 npm run version:sync   # 将当前 git tag 写入 package.json / Cargo.toml / tauri.conf.json
 ```
 
-CI 在独立的 lint 任务中强制 `cargo fmt --check`。`cargo clippy` 仍为
-**advisory** 模式——代码库 clippy 清理干净后，可在 `.github/workflows/build.yml`
-中移除 `continue-on-error`。
+CI 在独立的 lint 任务中强制全部四项检查（`cargo fmt --check`、
+`cargo clippy -D warnings`、`cargo test`、`npm run test:web`），均为
+**阻断式**——lint 失败则多平台构建不再启动。
 
 ---
 
@@ -425,10 +431,10 @@ winget install Microsoft.WebView2
 
 自动化构建基于 GitHub Actions：
 
-- **lint** —— 全量 `cargo fmt --check`（阻断式）。
+- **lint** —— 全量 `cargo fmt --check`、`cargo clippy -D warnings`、
+  `cargo test` 与更新检查版本比较的 node 测试（全部阻断式）。
 - **build** —— 多平台构建（Windows / macOS-x64 / macOS-arm64 / Linux），启用 npm
-  与 cargo 缓存，在 Linux 分支运行单元测试与 advisory clippy，并在某平台没有产出
-  安装包时直接失败。
+  与 cargo 缓存，以 lint 任务为前置门禁，并在某平台没有产出安装包时直接失败。
 - **release** —— 标签推送时自动发布 GitHub Release 并附带校验和。
 
 后端从 `magicwubiao/go-magic` 的 `GO_MAGIC_REF`（workflow 输入或仓库变量，默认

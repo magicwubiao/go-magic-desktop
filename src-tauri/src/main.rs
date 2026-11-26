@@ -6,786 +6,42 @@
 //! a child process, shows a bundled splash page until the backend's health
 //! check answers, then points the webview at `http://127.0.0.1:<port>` and
 //! shuts the backend down again when the window closes.
+//!
+//! Module layout:
+//! - [`backend`]      — spawn / supervise / restart / stop the child process
+//! - [`window_state`] — persisted window geometry (load, sanitize, debounce)
+//! - [`update`]       — the hidden update-check window and its dialog flow
+//! - [`locales`]      — shell text tables (menus, dialogs) per OS language
+//! - `main.rs`        — Tauri glue: builder, menu, event handlers, IPC commands
 
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, TryLockError};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::webview::NewWindowResponse;
+use std::process::Command;
+use std::sync::Mutex;
+
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
-// Shell text (menus, dialogs) lives in its own module; see `locales.rs`.
+mod backend;
 mod locales;
-use locales::{fill, shell_text};
+mod update;
+mod window_state;
+
+// Re-exports keep the crate-root namespace flat, so `tests.rs` (which imports
+// `use crate::*`) keeps working unchanged across the module split.
+pub(crate) use backend::*;
+pub(crate) use locales::{fill, shell_text};
+pub(crate) use update::*;
+pub(crate) use window_state::*;
+
+// Tests live in their own module.
+#[cfg(test)]
+mod tests;
 
 // ============================================================================
-// Window State Management
+// Small UI / navigation helpers
 // ============================================================================
-
-const DEFAULT_WINDOW_WIDTH: f64 = 1024.0;
-const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;
-const MIN_WINDOW_WIDTH: f64 = 800.0;
-const MIN_WINDOW_HEIGHT: f64 = 600.0;
-
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
-struct WindowState {
-    width: f64,
-    height: f64,
-    x: Option<f64>,
-    y: Option<f64>,
-    /// Whether the window was maximized when the app was last closed.
-    ///
-    /// `width`/`height` deliberately stay pinned to the *restored* (pre-maximize)
-    /// size, because a maximized window reports the monitor's size and restoring
-    /// that as a plain window would leave it a few pixels short of the screen
-    /// (the frame border) — which is exactly the "nearly full screen but
-    /// offset" bug. `serde(default)` keeps older state files loading.
-    #[serde(default)]
-    maximized: bool,
-}
-
-impl Default for WindowState {
-    fn default() -> Self {
-        WindowState {
-            width: DEFAULT_WINDOW_WIDTH,
-            height: DEFAULT_WINDOW_HEIGHT,
-            x: None,
-            y: None,
-            maximized: false,
-        }
-    }
-}
-
-/// Clamps a persisted window state to sizes the window manager will accept.
-///
-/// Also swallows `NaN` (a corrupt state file can deserialize to `f64::NAN`,
-/// since JSON has no NaN literal but `1e400` and friends do).
-fn sanitize_window_state(mut state: WindowState) -> WindowState {
-    state.width = state.width.max(MIN_WINDOW_WIDTH);
-    state.height = state.height.max(MIN_WINDOW_HEIGHT);
-    state
-}
-
-fn get_window_state_path(app_handle: &AppHandle) -> Option<PathBuf> {
-    app_handle
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("window-state.json"))
-}
-
-fn adjust_position_for_screen(
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    app_handle: &AppHandle,
-) -> (f64, f64) {
-    if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
-        let scale = monitor.scale_factor();
-        let wa = monitor.work_area();
-        let screen_x = wa.position.x as f64 / scale;
-        let screen_y = wa.position.y as f64 / scale;
-        let screen_width = wa.size.width as f64 / scale;
-        let screen_height = wa.size.height as f64 / scale;
-
-        let mut new_x = x;
-        let mut new_y = y;
-
-        if new_x + width > screen_x + screen_width {
-            new_x = screen_x + screen_width - width;
-        }
-        if new_x < screen_x {
-            new_x = screen_x;
-        }
-
-        if new_y + height > screen_y + screen_height {
-            new_y = screen_y + screen_height - height;
-        }
-        if new_y < screen_y {
-            new_y = screen_y;
-        }
-
-        (new_x, new_y)
-    } else {
-        (x, y)
-    }
-}
-
-fn save_window_state(app_handle: &AppHandle) {
-    let Some(path) = get_window_state_path(app_handle) else {
-        return;
-    };
-    let Some(window) = app_handle.get_webview_window("main") else {
-        return;
-    };
-
-    // A maximized (or fullscreen) window reports the monitor's size in both
-    // `inner_size` and `outer_position`, so persisting those would destroy the
-    // restore geometry. Keep the previous size instead and only record the
-    // `maximized` flag — that is what makes "maximize → close → reopen" land
-    // exactly on the monitor again instead of a few pixels off.
-    let maximized = window.is_maximized().unwrap_or(false);
-    let fullscreen = window.is_fullscreen().unwrap_or(false);
-
-    if maximized || fullscreen {
-        let mut state = load_window_state(app_handle);
-        state.maximized = maximized || fullscreen;
-        write_window_state(&path, &state);
-        return;
-    }
-
-    let scale_factor = window.scale_factor().unwrap_or(1.0);
-
-    let (width, height) = match window.inner_size() {
-        Ok(size) => {
-            let logical: tauri::LogicalSize<u32> = size.to_logical(scale_factor);
-            (logical.width as f64, logical.height as f64)
-        }
-        Err(_) => (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT),
-    };
-
-    let (x, y) = match window.outer_position() {
-        Ok(pos) => {
-            let logical: tauri::LogicalPosition<i32> = pos.to_logical(scale_factor);
-            (Some(logical.x as f64), Some(logical.y as f64))
-        }
-        Err(_) => (None, None),
-    };
-
-    let state = WindowState {
-        width: width.round(),
-        height: height.round(),
-        x: x.map(|v| v.round()),
-        y: y.map(|v| v.round()),
-        maximized: false,
-    };
-
-    write_window_state(&path, &state);
-}
-
-fn write_window_state(path: &Path, state: &WindowState) {
-    if let Ok(json) = serde_json::to_string_pretty(state) {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::write(path, &json) {
-            eprintln!("Failed to save window state: {}", e);
-        }
-    }
-}
-
-/// Debounce window for the resize/move persistence path.
-const WINDOW_STATE_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
-/// Raised whenever an un-persisted geometry change is observed.
-static WINDOW_STATE_SAVE_DIRTY: AtomicBool = AtomicBool::new(false);
-/// True while a debounce timer thread is sleeping.
-static WINDOW_STATE_SAVE_TIMER_RUNNING: AtomicBool = AtomicBool::new(false);
-
-/// Debounced [`save_window_state`] for the high-frequency Resized/Moved events.
-///
-/// Windows fires these events dozens of times per second while the user drags
-/// the window; a synchronous `fs::write` per event wastes I/O and briefly
-/// blocks the event loop on every tick. This coalesces each burst into a
-/// single write [`WINDOW_STATE_SAVE_DEBOUNCE`] after the last event: one timer
-/// thread waits it out, and any event landing during the wait only raises the
-/// dirty flag.
-///
-/// The immediate paths (window close, 菜单退出) call [`save_window_state`]
-/// directly, so a quit never depends on the debounce timer having fired.
-fn schedule_window_state_save(app_handle: &AppHandle) {
-    WINDOW_STATE_SAVE_DIRTY.store(true, Ordering::SeqCst);
-
-    // `swap(true)` returning true means a timer thread is already sleeping;
-    // it will observe the dirty flag before it exits, so no event is lost.
-    if WINDOW_STATE_SAVE_TIMER_RUNNING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    let app_handle = app_handle.clone();
-    thread::spawn(move || {
-        thread::sleep(WINDOW_STATE_SAVE_DEBOUNCE);
-        WINDOW_STATE_SAVE_TIMER_RUNNING.store(false, Ordering::SeqCst);
-        if WINDOW_STATE_SAVE_DIRTY.swap(false, Ordering::SeqCst) {
-            save_window_state(&app_handle);
-        }
-    });
-}
-
-fn load_window_state(app_handle: &AppHandle) -> WindowState {
-    let Some(path) = get_window_state_path(app_handle) else {
-        return WindowState::default();
-    };
-    if !path.exists() {
-        return WindowState::default();
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(content) => match serde_json::from_str::<WindowState>(&content) {
-            Ok(state) => sanitize_window_state(state),
-            Err(e) => {
-                eprintln!("Failed to parse window state: {}", e);
-                WindowState::default()
-            }
-        },
-        Err(e) => {
-            eprintln!("Failed to read window state: {}", e);
-            WindowState::default()
-        }
-    }
-}
-
-/// Reveals `window` on screen already maximized, in a single step.
-///
-/// tao maximizes a window that is not visible yet with `ShowWindow(SW_MAXIMIZE)`
-/// and then hides it again, which makes the window appear for an instant and
-/// vanish (see the comment on the window builder in `main`). Asking the window
-/// manager for `SW_SHOWMAXIMIZED` instead keeps the whole job in one call: the
-/// first frame that is ever composited is already the final, maximized one, and
-/// the window manager computes the frame and the monitor work area itself — so
-/// this does not reintroduce the "monitor-sized rectangle, a few pixels off"
-/// bug that persisting the maximized geometry used to cause.
-///
-/// Returns `false` when the native call could not be made, so the caller can
-/// fall back to tao's own `maximize()`.
-///
-/// Once the tauri in use ships with tao >= 0.37.0 this helper and the
-/// `cfg(not(windows))` split in `main` can both be dropped in favour of a plain
-/// `maximized(window_state.maximized)` on the builder.
-#[cfg(windows)]
-fn reveal_maximized<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
-    // `ShowWindow` command: activates the window and displays it maximized.
-    const SW_SHOWMAXIMIZED: i32 = 3;
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd_show: i32) -> i32;
-    }
-
-    let Ok(hwnd) = window.hwnd() else {
-        return false;
-    };
-
-    // SAFETY: `hwnd` is the handle of the window that was just created and is
-    // still alive here, and `ShowWindow` has no preconditions beyond the handle
-    // being valid.
-    unsafe {
-        ShowWindow(hwnd.0, SW_SHOWMAXIMIZED);
-    }
-
-    true
-}
-
-// ============================================================================
-// Constants Configuration
-// ============================================================================
-
-/// Ports the backend tries first, in this order. Kept short and stable so the
-/// documented default (`5000`) holds whenever it is free.
-const DEFAULT_PORTS: &[u16] = &[5000, 5001, 5002];
-/// Where the random fallback probing starts: the low end of the Windows
-/// dynamic-port range (macOS starts at 49152 too; Linux's 32768..60999
-/// contains it). Preferred over scanning a fixed low range — the old
-/// `8000..9000` / `3000` / `8080` fallbacks sit exactly where dev servers and
-/// proxies like to bind, so they both caused and collided with conflicts.
-const EPHEMERAL_PORT_MIN: u16 = 49152;
-/// How many random high ports to try before giving up.
-const EPHEMERAL_PORT_ATTEMPTS: u32 = 64;
-const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(60);
-const HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
-/// Timeout for a single health probe: connect, write and read alike.
-const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-/// Upper bound on how many bytes are read while hunting for the status line.
-const MAX_STATUS_LINE_BYTES: usize = 1024;
-/// How often the `backend-status` event is emitted while waiting for the backend.
-const BACKEND_STATUS_INTERVAL: Duration = Duration::from_secs(1);
-/// Grace period for the child process to die after being asked to terminate.
-const BACKEND_STOP_TIMEOUT: Duration = Duration::from_secs(5);
-/// How often the supervisor checks whether the backend is still running.
-const SUPERVISE_INTERVAL: Duration = Duration::from_secs(1);
-/// Consecutive automatic restart attempts before the supervisor gives up.
-///
-/// Reset as soon as the backend survives a full [`SUPERVISE_INTERVAL`], so a
-/// one-off crash hours into a session does not consume the whole budget.
-const MAX_BACKEND_RESTARTS: u32 = 5;
-/// First backoff step; doubled on every further failed attempt.
-const AUTO_RESTART_BASE_DELAY: Duration = Duration::from_secs(1);
-/// Ceiling for the exponential backoff.
-const AUTO_RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
-/// How many stderr lines are kept around to explain an unexpected exit.
-const BACKEND_STDERR_TAIL_LINES: usize = 20;
-/// Upper bound on the hidden update-check window's lifetime.
-///
-/// The page closes itself through `update_check_finished` once its check has
-/// settled (found / nothing to do / failed). This bound exists so a hung
-/// fetch — the page's own fetch timeout is 8s — can never leak a hidden
-/// webview for the whole session.
-const UPDATE_CHECK_MAX_LIFETIME: Duration = Duration::from_secs(20);
-/// Whether the running update check was started manually from the 检查更新
-/// menu item (vs the automatic launch-time check). Only a manual check gets
-/// "up to date" / "failed" feedback dialogs — an automatic one stays silent
-/// when there is nothing to report.
-static MANUAL_UPDATE_CHECK: AtomicBool = AtomicBool::new(false);
-
-// ============================================================================
-// Backend Process Management
-// ============================================================================
-
-struct BackendState {
-    process: Child,
-    port: u16,
-    start_time: Instant,
-}
-
-static BACKEND_STATE: Mutex<Option<BackendState>> = Mutex::new(None);
-/// Incremented every time a new backend process is installed.
-///
-/// The startup health check uses it to tell "my backend never answered" from
-/// "the supervisor already replaced it", which need opposite reactions.
-static BACKEND_GENERATION: AtomicU64 = AtomicU64::new(0);
-/// Set once the app is going away. The supervisor must never resurrect a
-/// backend that was stopped on purpose.
-static BACKEND_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
-/// Serialises manual and automatic restarts: two concurrent restarts would
-/// spawn two backends that then fight over the port and `sessions.db`.
-static RESTART_GUARD: Mutex<()> = Mutex::new(());
-/// Last stderr lines of the current child, kept so a crash can be explained.
-///
-/// The desktop log already carries everything via `tauri-plugin-log`, but a
-/// panic is printed once and then drowned by request logging; repeating the
-/// tail next to the exit status makes the cause impossible to miss.
-static BACKEND_STDERR_TAIL: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
-
-// --------------------------------------------------------------------------
-// Process Bookkeeping
-// --------------------------------------------------------------------------
-
-/// Installs a freshly spawned backend, replacing whatever was registered before.
-fn install_backend(process: Child, port: u16) {
-    // A poisoned lock must not swallow the new child: dropping the guard would
-    // leak the freshly spawned process (std does not kill on drop) while the
-    // state still looked empty, and the supervisor would then restart forever.
-    let mut guard = match BACKEND_STATE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    *guard = Some(BackendState {
-        process,
-        port,
-        start_time: Instant::now(),
-    });
-    drop(guard);
-
-    // Bumped only after the new child is in place, so a reader that observes a
-    // new generation also observes the matching process.
-    BACKEND_GENERATION.fetch_add(1, Ordering::SeqCst);
-}
-
-fn backend_generation() -> u64 {
-    BACKEND_GENERATION.load(Ordering::SeqCst)
-}
-
-/// True while the registered backend process is still running.
-///
-/// `Err` counts as running: an unreadable child is not evidence of a crash, and
-/// guessing "dead" here would make the app quit on a transient OS error.
-fn backend_child_running() -> bool {
-    let mut guard = match BACKEND_STATE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    match guard.as_mut() {
-        Some(state) => !matches!(state.process.try_wait(), Ok(Some(_))),
-        None => false,
-    }
-}
-
-/// Describes an exit status in the terms that matter for a crash report:
-/// an exit code, or the signal that killed the process.
-///
-/// The signal is the useful half: `9` (SIGKILL) points at the OOM killer or a
-/// stray `kill -9`, `15` at a `SIGTERM` from a restart script, while a plain
-/// exit code `2` is Go's signature for an unrecovered panic.
-fn describe_exit_status(status: ExitStatus) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-
-        if let Some(signal) = status.signal() {
-            return format!("killed by signal {} ({})", signal, signal_name(signal));
-        }
-    }
-
-    match status.code() {
-        Some(code) => format!("exit code {}", code),
-        None => status.to_string(),
-    }
-}
-
-#[cfg(unix)]
-fn signal_name(signal: i32) -> &'static str {
-    match signal {
-        1 => "SIGHUP",
-        2 => "SIGINT",
-        3 => "SIGQUIT",
-        4 => "SIGILL",
-        5 => "SIGTRAP",
-        6 => "SIGABRT",
-        7 => "SIGBUS",
-        8 => "SIGFPE",
-        9 => "SIGKILL",
-        10 => "SIGUSR1",
-        11 => "SIGSEGV",
-        12 => "SIGUSR2",
-        13 => "SIGPIPE",
-        14 => "SIGALRM",
-        15 => "SIGTERM",
-        _ => "unknown signal",
-    }
-}
-
-/// Exponential backoff for automatic restarts: 1s, 2s, 4s, 8s, 16s, then 30s.
-fn restart_delay(attempt: u32) -> Duration {
-    // Cap the shift so a large attempt counter cannot overflow the multiplier.
-    let factor = 1u64 << attempt.min(5);
-    let millis = (AUTO_RESTART_BASE_DELAY.as_millis() as u64).saturating_mul(factor);
-
-    Duration::from_millis(millis).min(AUTO_RESTART_MAX_DELAY)
-}
-
-/// Sleeps for `total`, but returns `true` as soon as the app starts shutting
-/// down — a quit must not wait out a 30s backoff.
-fn sleep_unless_shutting_down(total: Duration) -> bool {
-    const SLICE: Duration = Duration::from_millis(250);
-
-    let deadline = Instant::now() + total;
-    while Instant::now() < deadline {
-        if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
-            return true;
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        thread::sleep(SLICE.min(remaining));
-    }
-
-    BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst)
-}
-
-fn remember_stderr_line(line: &str) {
-    let mut tail = BACKEND_STDERR_TAIL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-    if tail.len() >= BACKEND_STDERR_TAIL_LINES {
-        tail.pop_front();
-    }
-    tail.push_back(line.to_string());
-}
-
-fn clear_stderr_tail() {
-    BACKEND_STDERR_TAIL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
-}
-
-fn backend_stderr_tail() -> Vec<String> {
-    BACKEND_STDERR_TAIL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .iter()
-        .cloned()
-        .collect()
-}
-
-/// What the supervisor knows about a backend that is no longer there.
-struct BackendExit {
-    status: String,
-    uptime: Duration,
-    port: u16,
-}
-
-/// Reports the registered backend as exited, or `None` while it is still alive.
-///
-/// A missing registration counts as an exit on purpose: it is what a failed
-/// restart leaves behind, and the supervisor must retry that case too.
-fn unexpected_backend_exit() -> Option<BackendExit> {
-    let mut guard = match BACKEND_STATE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    let Some(state) = guard.as_mut() else {
-        return Some(BackendExit {
-            status: "no backend process is running".to_string(),
-            uptime: Duration::ZERO,
-            port: 0,
-        });
-    };
-
-    match state.process.try_wait() {
-        Ok(Some(status)) => Some(BackendExit {
-            status: describe_exit_status(status),
-            uptime: state.start_time.elapsed(),
-            port: state.port,
-        }),
-        Ok(None) => None,
-        Err(e) => {
-            log::warn!("[backend] could not query the backend process: {}", e);
-            None
-        }
-    }
-}
-
-
-
-// --------------------------------------------------------------------------
-// Port Management
-// --------------------------------------------------------------------------
-
-/// Probes the port the same way the backend will bind it.
-///
-/// The Go backend listens on the wildcard (`:%d`), so the probe must claim the
-/// wildcard too. On Windows a loopback-specific bind (`127.0.0.1:port`)
-/// *succeeds* even while another process already owns the wildcard port — Go
-/// does not set `SO_EXCLUSIVEADDRUSE` — so probing loopback let two app
-/// instances both "verify" port 5000 as free. The second backend then died on
-/// startup, and because the surviving instance's server kept answering the
-/// health probe, the supervisor treated every restart as a success and
-/// reloaded the window every few seconds, forever.
-fn is_port_available(port: u16) -> bool {
-    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).is_ok()
-}
-
-fn pick_available_port() -> Option<u16> {
-    for &port in DEFAULT_PORTS {
-        if is_port_available(port) {
-            return Some(port);
-        }
-    }
-
-    // Randomised high ports instead of a fixed scan: two app instances (or an
-    // app and anything else that scans the same fixed range) picking the same
-    // predictable candidate is exactly the race that starts crash loops.
-    let mut rng = port_rng_seed();
-    let range = (u16::MAX - EPHEMERAL_PORT_MIN) as u64 + 1;
-    for _ in 0..EPHEMERAL_PORT_ATTEMPTS {
-        let port = EPHEMERAL_PORT_MIN + (rng.next() % range) as u16;
-        if is_port_available(port) {
-            return Some(port);
-        }
-    }
-    None
-}
-
-/// Seed for the port probe's tiny xorshift generator: time and pid mixed with
-/// splitmix64 constants. `std` only — no rand dependency for one number.
-fn port_rng_seed() -> XorShift64 {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let pid = u64::from(std::process::id());
-    let mut seed = nanos ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    // xorshift must never start from zero.
-    if seed == 0 {
-        seed = 0xA076_1D64_78BD_642F;
-    }
-    XorShift64(seed)
-}
-
-/// Minimal xorshift64* generator for the port probe. Not cryptographic — it
-/// only needs to scatter candidates over the ephemeral range.
-struct XorShift64(u64);
-
-impl XorShift64 {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
-// --------------------------------------------------------------------------
-// Health Check
-// --------------------------------------------------------------------------
-
-/// Extracts the status code from an HTTP/1.x status line (`HTTP/1.1 200 OK`).
-///
-/// Anything that is not a status line — a TLS alert, a stray banner, an empty
-/// response — yields `None`, which the caller treats as "not healthy".
-fn parse_status_code(status_line: &str) -> Option<u16> {
-    let mut parts = status_line.trim().split(' ');
-
-    if !parts.next()?.starts_with("HTTP/") {
-        return None;
-    }
-
-    parts.next()?.parse().ok()
-}
-
-/// Reads just enough of the response to recover the status code.
-///
-/// A single `read` may hand back a partial line, so this keeps reading until the
-/// end of the status line or [`MAX_STATUS_LINE_BYTES`]. The response body is
-/// never read: it cannot change the verdict and must not be buffered.
-fn read_status_code(stream: &mut TcpStream) -> Option<u16> {
-    let mut head = Vec::with_capacity(64);
-    let mut chunk = [0u8; 64];
-
-    loop {
-        match stream.read(&mut chunk) {
-            // EOF: take whatever arrived before the connection was closed.
-            Ok(0) => break,
-            Ok(read) => {
-                head.extend_from_slice(&chunk[..read]);
-                if head.contains(&b'\n') || head.len() >= MAX_STATUS_LINE_BYTES {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
-    let head = String::from_utf8_lossy(&head);
-    parse_status_code(head.lines().next().unwrap_or_default())
-}
-
-/// Probes `GET /health` on the local backend.
-///
-/// Note the probe only sees *a* server on this port — it cannot attribute the
-/// answer to this instance's child. Callers that care (every caller does) must
-/// pair a successful probe with [`backend_child_running`].
-///
-/// Speaks HTTP/1.1 over a raw socket on purpose: the only request this shell
-/// ever makes is this plain-HTTP localhost liveness check, and a full HTTP client
-/// (reqwest → hyper → tokio → rustls → ring) is a poor trade for one status line.
-fn check_backend_health(port: u16) -> bool {
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, HEALTH_PROBE_TIMEOUT) else {
-        return false;
-    };
-
-    if stream.set_read_timeout(Some(HEALTH_PROBE_TIMEOUT)).is_err()
-        || stream
-            .set_write_timeout(Some(HEALTH_PROBE_TIMEOUT))
-            .is_err()
-    {
-        return false;
-    }
-
-    // `Connection: close` keeps the backend from holding the socket open, so the
-    // status line is flushed as part of the response.
-    let request = format!(
-        "GET /health HTTP/1.1\r\n\
-         Host: 127.0.0.1:{port}\r\n\
-         User-Agent: go-magic-desktop/{}\r\n\
-         Accept: */*\r\n\
-         Connection: close\r\n\r\n",
-        env!("APP_VERSION")
-    );
-
-    if stream.write_all(request.as_bytes()).is_err() {
-        return false;
-    }
-
-    read_status_code(&mut stream)
-        .map(|code| (200..300).contains(&code))
-        .unwrap_or(false)
-}
-
-/// Polls `/health` until the backend answers or [`HEALTH_CHECK_TIMEOUT`] elapses.
-///
-/// `generation` names the backend process the caller is waiting for. When the
-/// supervisor replaces that process mid-wait this returns `false` immediately:
-/// the supervisor navigates the window itself, and a caller that kept polling
-/// the old port would later reload a page the user is already working in.
-/// Pass `None` from a restart — the caller *is* the replacement.
-///
-/// Intended to be called from a background thread: it blocks and emits
-/// `backend-status` progress events while it waits.
-fn wait_for_backend_ready(port: u16, generation: Option<u64>, app_handle: &AppHandle) -> bool {
-    let start = Instant::now();
-
-    #[cfg(debug_assertions)]
-    println!("Waiting for backend on port {}...", port);
-
-    let mut last_status = start;
-    loop {
-        if matches!(generation, Some(expected) if backend_generation() != expected) {
-            #[cfg(debug_assertions)]
-            println!("Backend was replaced while waiting; handing over to the supervisor");
-
-            return false;
-        }
-
-        // A child that is gone cannot become ready. Bail out instead of burning
-        // the full timeout: a crash-looping backend is then retried within
-        // seconds per attempt rather than a minute per attempt.
-        if !backend_child_running() {
-            return false;
-        }
-
-        // Throttled so a slow start does not flood the frontend with events.
-        if last_status.elapsed() >= BACKEND_STATUS_INTERVAL {
-            last_status = Instant::now();
-            let _ = app_handle.emit(
-                "backend-status",
-                serde_json::json!({
-                    "state": "starting",
-                    "elapsed": start.elapsed().as_secs(),
-                    "port": port
-                }),
-            );
-        }
-
-        if check_backend_health(port) {
-            // A 200 is only meaningful if it came from OUR child. While two
-            // app instances are running, the other instance's backend may be
-            // the one answering here (e.g. both selected the same port before
-            // either bound it): the probe cannot tell the servers apart.
-            // Reporting success for a dead child reset the supervisor's retry
-            // budget on every attempt and reloaded the window forever, so a
-            // dead child always counts as "not ready".
-            if !backend_child_running() {
-                #[cfg(debug_assertions)]
-                println!("Health probe answered but the backend child is gone; treating as not ready");
-
-                return false;
-            }
-
-            #[cfg(debug_assertions)]
-            println!("Backend ready after {}ms", start.elapsed().as_millis());
-            return true;
-        }
-
-        if start.elapsed() >= HEALTH_CHECK_TIMEOUT {
-            break;
-        }
-
-        thread::sleep(HEALTH_CHECK_INTERVAL);
-    }
-
-    false
-}
-
-// --------------------------------------------------------------------------
-// Process Control
-// --------------------------------------------------------------------------
 
 fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
     eprintln!("{}: {}", title, message);
@@ -797,7 +53,7 @@ fn show_error_dialog(app_handle: &AppHandle, title: &str, message: &str) {
         .show(|_| {});
 }
 
-fn open_external_link(_app_handle: &AppHandle, url: &str) {
+pub(crate) fn open_external_link(_app_handle: &AppHandle, url: &str) {
     // Only ever hand web URLs to the OS. Without this, a crafted link could ask
     // the shell to open `file://`, a custom scheme handler, or worse.
     let Ok(parsed) = url.parse::<tauri::Url>() else {
@@ -825,7 +81,7 @@ fn open_external_link(_app_handle: &AppHandle, url: &str) {
 /// The tauri host must match *exactly* (`tauri.localhost`): a suffix check
 /// such as `ends_with("tauri.localhost")` would also admit a lookalike like
 /// `eviltauri.localhost`.
-fn is_shell_or_backend_url(url: &tauri::Url) -> bool {
+pub(crate) fn is_shell_or_backend_url(url: &tauri::Url) -> bool {
     let host = url.host_str().unwrap_or("");
     host == "127.0.0.1"
         || host == "localhost"
@@ -838,7 +94,7 @@ fn is_shell_or_backend_url(url: &tauri::Url) -> bool {
 /// Both `resources/*` (which lands in `<resource_dir>/resources/`) and a
 /// flattened layout (binary at the resource root) are covered, because the
 /// packaging config and the bundler differ per platform.
-fn backend_search_dirs(resource_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn backend_search_dirs(resource_dir: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
     if let Ok(exe_path) = std::env::current_exe() {
@@ -864,7 +120,7 @@ fn backend_search_dirs(resource_dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     const BINARY_NAMES: &[&str] = &["go-magic.exe", "go-magic"];
     #[cfg(not(target_os = "windows"))]
@@ -885,16 +141,23 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
         }
     }
 
-    // Last resort: let the OS resolve the binary from PATH.
-    #[cfg(target_os = "windows")]
-    const PATH_BINARY: &str = "go-magic.exe";
-    #[cfg(not(target_os = "windows"))]
-    const PATH_BINARY: &str = "go-magic";
+    // Last resort for *development* only: let the OS resolve the binary from
+    // PATH. A release build must never do this — executing whatever `go-magic`
+    // happens to be on the user's PATH (during the probe and then for the
+    // whole session) would run an unknown backend version behind the shell's
+    // back. A shipped app that cannot find its bundled binary reports the
+    // error dialog instead.
+    #[cfg(debug_assertions)]
+    {
+        #[cfg(target_os = "windows")]
+        const PATH_BINARY: &str = "go-magic.exe";
+        #[cfg(not(target_os = "windows"))]
+        const PATH_BINARY: &str = "go-magic";
 
-    if Command::new(PATH_BINARY).arg("--version").output().is_ok() {
-        #[cfg(debug_assertions)]
-        println!("Found backend in PATH: {}", PATH_BINARY);
-        return Some(PathBuf::from(PATH_BINARY));
+        if Command::new(PATH_BINARY).arg("--version").output().is_ok() {
+            println!("Found backend in PATH: {}", PATH_BINARY);
+            return Some(PathBuf::from(PATH_BINARY));
+        }
     }
 
     eprintln!("Backend executable not found. Searched paths:");
@@ -905,481 +168,13 @@ fn find_backend_path(resource_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-#[derive(Debug)]
-enum BackendError {
-    NoPortAvailable,
-    BackendNotFound,
-    SpawnFailed(String),
-    HealthCheckTimeout,
-}
-
-impl std::fmt::Display for BackendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // These strings reach the startup error dialog and logs, so they come
-        // from the shell text tables (see `locales.rs`) rather than being
-        // hardcoded English. The dialogs for BackendNotFound build richer
-        // messages in `setup`, so this short form is a fallback.
-        let text = shell_text();
-        match self {
-            BackendError::NoPortAvailable => write!(f, "{}", text.error_no_port),
-            BackendError::BackendNotFound => write!(f, "{}", text.error_backend_not_found),
-            BackendError::SpawnFailed(msg) => {
-                write!(f, "{}", fill(text.error_spawn_failed, &[msg.as_str()]))
-            }
-            BackendError::HealthCheckTimeout => write!(f, "{}", text.error_health_check_timeout),
-        }
-    }
-}
-
-impl std::error::Error for BackendError {}
-
-/// Continuously drains the child's stdout/stderr on dedicated threads.
-///
-/// Both streams must be read until EOF. Reading only the first N lines (as this
-/// used to do) closes the pipe, which both loses the tail of the logs and — once
-/// the OS pipe buffer fills up — blocks the backend forever on its next write.
-fn drain_pipes(child: &mut Child) {
-    if let Some(stdout) = child.stdout.take() {
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                log::info!("[backend] {}", line);
-            }
-        });
-    }
-
-    if let Some(stderr) = child.stderr.take() {
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if line.trim().is_empty() {
-                    continue;
-                }
-
-                remember_stderr_line(&line);
-
-                // A Go panic / runtime fatal error is printed exactly once, as
-                // the last thing the process says. Logging it at error level
-                // (and keeping it in the tail) is what turns a silent "the
-                // service closed" into an actionable stack trace.
-                if line.contains("panic:") || line.contains("fatal error:") {
-                    log::error!("[backend] {}", line);
-                } else {
-                    log::warn!("[backend] {}", line);
-                }
-            }
-        });
-    }
-}
-
-/// Spawns the bundled backend **without** waiting for it to become healthy.
-///
-/// Keeping the spawn free of any blocking work is what lets `setup` create the
-/// window immediately; the health check runs on a background thread instead.
-fn spawn_backend(resource_dir: &Path) -> Result<(Child, u16), BackendError> {
-    let port = pick_available_port().ok_or(BackendError::NoPortAvailable)?;
-
-    #[cfg(debug_assertions)]
-    println!("Selected port: {}", port);
-
-    let backend_path = find_backend_path(resource_dir).ok_or(BackendError::BackendNotFound)?;
-
-    #[cfg(debug_assertions)]
-    println!("Backend path: {:?}", backend_path);
-
-    let port_arg = port.to_string();
-
-    let mut command = Command::new(&backend_path);
-    command
-        .args(["server", "--port", &port_arg])
-        .env("GOMAGIC_PORT", &port_arg)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // Started from the resource directory so the backend resolves its own assets
-    // relative to the working directory.
-    #[cfg(not(target_os = "windows"))]
-    command.current_dir(resource_dir);
-
-    // A Rust backtrace is useful while developing and noise in a shipped build
-    // (it would only leak internal paths into the log file).
-    #[cfg(debug_assertions)]
-    command.env("RUST_BACKTRACE", "1");
-
-    // Don't flash a console window on Windows.
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    // The tail describes one child's lifetime; a new child starts with a clean
-    // slate so a later crash report cannot quote an older process's output.
-    clear_stderr_tail();
-
-    let mut child = command
-        .spawn()
-        .map_err(|e| BackendError::SpawnFailed(format!("{} ({})", e, backend_path.display())))?;
-
-    log::info!(
-        "[backend] spawned PID {:?} on port {} ({})",
-        child.id(),
-        port,
-        backend_path.display()
-    );
-
-    #[cfg(debug_assertions)]
-    println!("Backend process spawned, PID: {:?}", child.id());
-
-    drain_pipes(&mut child);
-
-    Ok((child, port))
-}
-
-/// Asks the backend nicely to shut down, via the console API.
-///
-/// The backend is a console program spawned with `CREATE_NO_WINDOW`, so it has
-/// its own (invisible) console. A packaged shell runs windowless and has no
-/// console of its own, so attaching to the child's console and broadcasting
-/// `CTRL_BREAK` reaches exactly the backend and the helper processes that
-/// inherited its console — nothing else on the machine. A Go backend handles
-/// the event like a Ctrl-C and gets a chance to flush its databases; one that
-/// does not handle it still dies with the default handler, i.e. no worse than
-/// the force kill that used to be the only path.
-///
-/// Returns `false` when the signal could not be delivered (typically `tauri
-/// dev`, where the shell already owns the developer's terminal console and
-/// attaching would fail or detach it) — the caller then goes straight to the
-/// force path, exactly like before.
-#[cfg(target_os = "windows")]
-fn request_graceful_console_shutdown(child_pid: u32) -> bool {
-    const CTRL_BREAK_EVENT: u32 = 1;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn AttachConsole(process_id: u32) -> i32;
-        fn FreeConsole() -> i32;
-        fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
-        fn SetConsoleCtrlHandler(
-            handler: Option<unsafe extern "system" fn(u32) -> i32>,
-            add: i32,
-        ) -> i32;
-    }
-
-    // SAFETY: `SetConsoleCtrlHandler(None, TRUE)` installs the "ignore" handler
-    // for this process. It must run before the broadcast below, otherwise the
-    // CTRL_BREAK aimed at the backend would terminate the shell itself.
-    unsafe {
-        SetConsoleCtrlHandler(None, 1);
-    }
-
-    // SAFETY: attaching to the child's console. Fails cleanly when this process
-    // already has one (`tauri dev`) — the caller falls back to force kill and
-    // the developer's terminal is left untouched.
-    let attached = unsafe { AttachConsole(child_pid) } != 0;
-    if !attached {
-        return false;
-    }
-
-    // SAFETY: group id 0 broadcasts to every process attached to *our current*
-    // console, which is now the child's — the backend and its helpers.
-    let delivered = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) } != 0;
-
-    // Detach again; the shell has no business holding the child's console.
-    unsafe {
-        FreeConsole();
-    }
-
-    delivered
-}
-
-/// Terminates the backend: a graceful signal first, a tree force-kill after
-/// [`BACKEND_STOP_TIMEOUT`].
-///
-/// The graceful step gives the Go backend a chance to flush open databases and
-/// in-flight responses before it dies. A backend that ignores the signal — or
-/// an OS call that fails — ends up on the same force path as before, so the
-/// worst case is unchanged, it just starts a few seconds later.
-fn stop_backend() {
-    // Recover from a poisoned lock instead of bailing out: leaving the child
-    // running would keep it bound to the port after the app is gone.
-    let mut guard = match BACKEND_STATE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let Some(mut state) = guard.take() else {
-        return;
-    };
-    // Release the lock before waiting so a concurrent `stop_backend` cannot
-    // block behind us while we sleep.
-    drop(guard);
-
-    #[cfg(debug_assertions)]
-    println!(
-        "Stopping backend (ran for {:.1}s)...",
-        state.start_time.elapsed().as_secs_f64()
-    );
-
-    // ---- graceful attempt ------------------------------------------------
-    // One `let` per platform: a shared `let mut x = false;` plus cfg blocks
-    // trips the `unused_assignments` lint on Windows, where the initializer is
-    // never read.
-
-    #[cfg(unix)]
-    let signal_sent = {
-        // `Child::kill` is SIGKILL, which skips any cleanup the backend does.
-        // SIGTERM is what a shell Ctrl-C / service manager would send, so the
-        // exit path is the well-exercised one.
-        let pid = state.process.id() as libc::pid_t;
-        let sent = unsafe { libc::kill(pid, libc::SIGTERM) };
-        sent == 0
-    };
-
-    #[cfg(target_os = "windows")]
-    let signal_sent = request_graceful_console_shutdown(state.process.id());
-
-    // ---- grace period -----------------------------------------------------
-    let mut exited = false;
-    if signal_sent {
-        let deadline = Instant::now() + BACKEND_STOP_TIMEOUT;
-        loop {
-            match state.process.try_wait() {
-                Ok(Some(_)) => {
-                    exited = true;
-                    break;
-                }
-                Ok(None) if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(50));
-                }
-                _ => break,
-            }
-        }
-    }
-
-    // ---- force path -------------------------------------------------------
-    if !exited {
-        // On Windows the Go backend may have helper processes of its own; kill
-        // the whole tree so nothing is left running behind the app's back.
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            let _ = Command::new("taskkill")
-                .args(["/PID", &state.process.id().to_string(), "/T", "/F"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .status();
-        }
-
-        let _ = state.process.kill();
-    }
-
-    // Reap the child, otherwise it stays around as a zombie.
-    let deadline = Instant::now() + BACKEND_STOP_TIMEOUT;
-    loop {
-        match state.process.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
-            _ => {
-                let _ = state.process.wait();
-                break;
-            }
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    println!("Backend stopped");
-}
-
-/// Stops the backend because the app is going away.
-///
-/// The flag is what keeps the supervisor from resurrecting a backend that was
-/// stopped on purpose: once the child was gone, closing the window and a crash
-/// looked exactly the same.
-fn shutdown_backend() {
-    BACKEND_SHUTTING_DOWN.store(true, Ordering::SeqCst);
-    stop_backend();
-}
-
-/// Restarts the backend and waits for the replacement to answer.
-///
-/// Returns `true` when a healthy replacement is running. Blocks for up to
-/// [`HEALTH_CHECK_TIMEOUT`], so call it from a background thread (see
-/// [`restart_backend_cmd`] and [`supervise_backend`]).
-fn restart_backend(app_handle: &AppHandle, resource_dir: &Path) -> bool {
-    #[cfg(debug_assertions)]
-    println!("Restarting backend...");
-
-    log::info!("[backend] restart requested");
-
-    stop_backend();
-
-    // A restart queued just before the window closed must not spawn a process
-    // that then outlives the app.
-    if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
-        return false;
-    }
-
-    thread::sleep(Duration::from_secs(1));
-
-    let (process, port) = match spawn_backend(resource_dir) {
-        Ok(spawned) => spawned,
-        Err(e) => {
-            log::error!("[backend] restart failed: {}", e);
-            let _ = app_handle.emit(
-                "backend-error",
-                serde_json::json!({ "message": e.to_string() }),
-            );
-            return false;
-        }
-    };
-
-    install_backend(process, port);
-
-    if !wait_for_backend_ready(port, None, app_handle) {
-        let msg = fill(
-            shell_text().dialog_backend_not_ready_restart,
-            &[&HEALTH_CHECK_TIMEOUT.as_secs().to_string()],
-        );
-        log::error!("[backend] {}", msg);
-        let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
-
-        // A replacement that never answers is no better than a dead one. Drop
-        // it so the supervisor sees "no backend" on its next tick and retries
-        // with backoff, instead of leaving a half-started process behind.
-        stop_backend();
-        return false;
-    }
-
-    // The new instance may have picked a different port, so point the window at
-    // it again.
-    if let Some(window) = app_handle.get_webview_window("main") {
-        if let Ok(url) = format!("http://127.0.0.1:{}/", port).parse::<tauri::Url>() {
-            let _ = window.navigate(url);
-        }
-    }
-
-    log::info!("[backend] restarted on port {}", port);
-
-    #[cfg(debug_assertions)]
-    println!("Backend restarted on port {}", port);
-
-    let _ = app_handle.emit("backend-restarted", port);
-
-    true
-}
-
-/// Watches the backend child and brings it back when it dies.
-///
-/// The shell used to spawn the backend exactly once. A panic in any goroutine
-/// (Go takes the whole process down, even when `net/http` would have recovered
-/// the same panic inside a handler), an OOM kill, or a stray `kill` therefore
-/// left the window pointing at a closed port: no message, no recovery short of
-/// restarting the app. The supervisor turns that into a logged, self-healing
-/// restart — and, once the retry budget is spent, into a visible error instead
-/// of a silently dead window.
-///
-/// It deliberately restarts on *process exit* only, never on a failed `/health`
-/// probe: a busy backend can miss a probe while a long-running task is making
-/// progress, and killing it there would throw the user's work away.
-fn supervise_backend(app_handle: AppHandle, resource_dir: PathBuf) {
-    let mut failures: u32 = 0;
-
-    loop {
-        thread::sleep(SUPERVISE_INTERVAL);
-
-        if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
-            return;
-        }
-
-        // Only one restart may be in flight. A manual restart (or a previous
-        // auto-restart) holds this guard, so a tick landing in the middle of it
-        // must not conclude that the backend is gone.
-        let _guard = match RESTART_GUARD.try_lock() {
-            Ok(guard) => guard,
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => continue,
-        };
-
-        if BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst) {
-            return;
-        }
-
-        let Some(exit) = unexpected_backend_exit() else {
-            // Alive for a full interval: the previous crash is behind us, so the
-            // next one gets the full retry budget again.
-            failures = 0;
-            continue;
-        };
-
-        log::error!(
-            "[backend] exited unexpectedly after {:.1}s on port {}: {}",
-            exit.uptime.as_secs_f64(),
-            exit.port,
-            exit.status
-        );
-
-        // The exit status says *that* it died; the tail says *why*.
-        for line in backend_stderr_tail() {
-            log::error!("[backend] (last output) {}", line);
-        }
-
-        let _ = app_handle.emit(
-            "backend-exited",
-            serde_json::json!({
-                "status": exit.status.clone(),
-                "port": exit.port,
-                "uptime": exit.uptime.as_secs(),
-            }),
-        );
-
-        if failures >= MAX_BACKEND_RESTARTS {
-            let msg = fill(
-                shell_text().dialog_service_stopped,
-                &[&exit.status.to_string(), &MAX_BACKEND_RESTARTS.to_string()],
-            );
-
-            log::error!(
-                "[backend] giving up after {} restart attempts",
-                MAX_BACKEND_RESTARTS
-            );
-            let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
-            show_error_dialog(
-                &app_handle,
-                shell_text().dialog_service_stopped_title,
-                &msg,
-            );
-            return;
-        }
-
-        let delay = restart_delay(failures);
-        failures += 1;
-
-        log::warn!(
-            "[backend] restarting in {:.0}s (attempt {}/{})",
-            delay.as_secs_f64(),
-            failures,
-            MAX_BACKEND_RESTARTS
-        );
-
-        if sleep_unless_shutting_down(delay) {
-            return;
-        }
-
-        if restart_backend(&app_handle, &resource_dir) {
-            failures = 0;
-        }
-    }
-}
-
 // ============================================================================
 // Tauri Commands
 // ============================================================================
 
 #[tauri::command]
 fn get_backend_port() -> Option<u16> {
-    BACKEND_STATE
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|s| s.port))
+    current_backend_port()
 }
 
 /// Shared restart entry point: fires `backend-restarting` and restarts the
@@ -1397,7 +192,7 @@ fn trigger_backend_restart(app_handle: &AppHandle) {
     // The thread needs an owned handle: a spawned closure must be `'static`,
     // and a `&AppHandle` borrowed from the caller would not outlive it.
     let app_handle = app_handle.clone();
-    thread::spawn(move || {
+    std::thread::spawn(move || {
         // Serialise with the supervisor. Without this, a manual restart landing
         // on the same tick as an automatic one spawns two backends, which then
         // fight over the port and over `sessions.db`.
@@ -1437,13 +232,15 @@ fn get_app_info() -> serde_json::Value {
 /// frontend waits for the answer.
 #[tauri::command]
 async fn check_backend_health_cmd(port: Option<u16>) -> bool {
-    let port = port.unwrap_or_else(|| {
-        BACKEND_STATE
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|s| s.port))
-            .unwrap_or(5000)
-    });
+    // Only probe a port we actually own. The old `unwrap_or(5000)` fallback
+    // could answer "healthy" for a *different* app instance's backend (or any
+    // other server that happened to sit on 5000) whenever the shell's own
+    // registration was missing — a misleading result in the exact situation
+    // (backend gone) the check exists for.
+    let Some(port) = port.or_else(current_backend_port) else {
+        log::warn!("[backend] health check requested but no backend is running");
+        return false;
+    };
 
     match tauri::async_runtime::spawn_blocking(move || check_backend_health(port)).await {
         Ok(healthy) => healthy,
@@ -1452,273 +249,6 @@ async fn check_backend_health_cmd(port: Option<u16>) -> bool {
             false
         }
     }
-}
-
-/// Update notice handed over by the hidden update-check page.
-///
-/// The check itself lives in `src-tauri/splash/update-check.html`: it fetches
-/// a static JSON manifest through the webview's network stack, which keeps the
-/// shell's "no HTTP client, no TLS crate" design intact (see the security
-/// notes in the README). This command is the native half of the flow — the
-/// dialog and the browser hand-off it performs are fully native and
-/// independent of the window that reported the notice.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateNotice {
-    /// Version the running build reports (`get_app_info`).
-    current_version: String,
-    /// Version advertised by the remote update manifest.
-    latest_version: String,
-    /// Where to send the user; clamped to the official releases by
-    /// [`official_download_url`] before anything opens a browser.
-    download_url: String,
-    /// Optional release notes shown inside the dialog.
-    #[serde(default)]
-    notes: String,
-}
-
-/// A "稍后" record: the user has already seen the update dialog for this
-/// (current -> latest) pair and dismissed it.
-///
-/// The automatic launch-time check must not re-prompt for the same pair on
-/// every start — once dismissed, it stays silent until either side of the pair
-/// changes (a newer release ships, or the user actually upgraded, which moves
-/// `current_version`). The manual 检查更新 menu item ignores this record and
-/// always shows the dialog.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct DeferredUpdateNotice {
-    current_version: String,
-    latest_version: String,
-}
-
-/// Path of the deferral record (next to the persisted window state).
-fn deferred_notice_path(app_handle: &AppHandle) -> Option<PathBuf> {
-    app_handle
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("update-notice.json"))
-}
-
-/// Loads the deferral record; a missing or corrupt file means "no deferral".
-fn load_deferred_notice(app_handle: &AppHandle) -> Option<DeferredUpdateNotice> {
-    let path = deferred_notice_path(app_handle)?;
-    let raw = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str(&raw) {
-        Ok(deferred) => Some(deferred),
-        Err(e) => {
-            log::warn!("[update] ignoring corrupt update-notice.json: {}", e);
-            None
-        }
-    }
-}
-
-/// Persists the deferral record; best-effort, failures are only logged (the
-/// worst case is the dialog coming back on the next launch, which is harmless).
-fn save_deferred_notice(app_handle: &AppHandle, deferred: &DeferredUpdateNotice) {
-    let Some(path) = deferred_notice_path(app_handle) else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            log::warn!("[update] could not create {}: {}", dir.display(), e);
-            return;
-        }
-    }
-    match serde_json::to_string_pretty(deferred) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json + "\n") {
-                log::warn!("[update] could not write {}: {}", path.display(), e);
-            }
-        }
-        Err(e) => log::warn!("[update] could not serialize deferral: {}", e),
-    }
-}
-
-/// The only destination the update dialog may open in the system browser: the
-/// project's own GitHub releases.
-///
-/// The update manifest travels through shared CDNs (jsDelivr, GitHub raw)
-/// whose caches have historically served stale content — and could in
-/// principle serve tampered content. A poisoned manifest must therefore not be
-/// able to point the "go download" button at an attacker's page, so the URL is
-/// clamped to the official releases prefix; anything else falls back to the
-/// canonical URL with a warning.
-const OFFICIAL_RELEASES_URL: &str =
-    "https://github.com/magicwubiao/go-magic-desktop/releases/latest";
-/// Path prefix a manifest-provided download URL must sit under.
-const OFFICIAL_RELEASES_PATH_PREFIX: &str = "/magicwubiao/go-magic-desktop/releases";
-
-/// Validates a manifest-provided download URL against the official releases.
-///
-/// Returns `None` for anything that is not an `https://github.com` URL under
-/// the project's releases path — the caller substitutes the canonical URL.
-fn official_download_url(raw: &str) -> Option<tauri::Url> {
-    let url = raw.parse::<tauri::Url>().ok()?;
-    if url.scheme() != "https" || url.host_str() != Some("github.com") {
-        return None;
-    }
-    let path = url.path();
-    if path != OFFICIAL_RELEASES_PATH_PREFIX
-        && !path.starts_with(&format!("{OFFICIAL_RELEASES_PATH_PREFIX}/"))
-    {
-        return None;
-    }
-    Some(url)
-}
-
-/// Shows a native "new version available" dialog; on confirmation opens the
-/// download page in the system browser.
-#[tauri::command]
-fn notify_update_available(app_handle: AppHandle, notice: UpdateNotice) {
-    // Only ever hand vetted https URLs to the OS browser: a manifest pointing
-    // at `file://`, a custom scheme handler, or someone else's site is replaced
-    // with the official releases URL rather than opened.
-    let download_url = match official_download_url(&notice.download_url) {
-        Some(url) => url,
-        None => {
-            log::warn!(
-                "[update] manifest download URL {:?} is outside the official releases; \
-                 using {} instead",
-                notice.download_url,
-                OFFICIAL_RELEASES_URL
-            );
-            OFFICIAL_RELEASES_URL
-                .parse::<tauri::Url>()
-                .expect("OFFICIAL_RELEASES_URL constant must be a valid URL")
-        }
-    };
-
-    // The automatic launch-time check stays quiet for a pair the user already
-    // dismissed; a manual 检查更新 always shows the dialog on purpose.
-    if MANUAL_UPDATE_CHECK.load(Ordering::SeqCst) {
-        log::info!("[update] manual check: prompting regardless of deferral");
-    } else if load_deferred_notice(&app_handle).is_some_and(|deferred| {
-        deferred.current_version == notice.current_version
-            && deferred.latest_version == notice.latest_version
-    }) {
-        log::info!(
-            "[update] skipping automatic prompt: {} -> {} was deferred by the user",
-            notice.current_version,
-            notice.latest_version
-        );
-        return;
-    }
-
-    let text = shell_text();
-
-    let mut message = fill(
-        text.dialog_update_body,
-        &[&notice.latest_version, &notice.current_version],
-    );
-    let notes = notice.notes.trim();
-    if !notes.is_empty() {
-        message.push_str(&fill(text.dialog_update_notes, &[notes]));
-    }
-
-    let deferred = DeferredUpdateNotice {
-        current_version: notice.current_version.clone(),
-        latest_version: notice.latest_version.clone(),
-    };
-    app_handle
-        .dialog()
-        .message(message)
-        .title(text.dialog_update_title)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            text.dialog_update_go.to_string(),
-            text.dialog_update_later.to_string(),
-        ))
-        .show(move |go_download| {
-            // Record the pair whichever button was pressed: both mean "the
-            // user has seen this update". Once they actually install it, the
-            // running version changes and the record no longer matches, so
-            // the next new release prompts again.
-            save_deferred_notice(&app_handle, &deferred);
-            if go_download {
-                open_external_link(&app_handle, download_url.as_str());
-            }
-        });
-}
-
-/// Called by the hidden update-check page once its check has settled:
-///
-/// - `"up-to-date"` — the manifest was fetched fine, but its version is not
-///   newer than the running build.
-/// - `"updated"` — a newer version was found and `notify_update_available`
-///   already showed the update dialog.
-/// - `"error"` — the check could not complete (network, bad manifest, ...).
-///
-/// Closes the hidden window. A *manual* check (菜单"检查更新...") also gets
-/// explicit feedback for `up-to-date`/`error`; an automatic launch-time check
-/// stays silent unless it found an update.
-#[tauri::command]
-fn update_check_finished(app_handle: AppHandle, status: String) {
-    let manual = MANUAL_UPDATE_CHECK.swap(false, Ordering::SeqCst);
-
-    if let Some(window) = app_handle.get_webview_window("update-check") {
-        let _ = window.close();
-    }
-
-    if !manual {
-        return;
-    }
-
-    match status.as_str() {
-        "up-to-date" => {
-            let text = shell_text();
-            app_handle
-                .dialog()
-                .message(fill(
-                    text.dialog_check_up_to_date,
-                    &[env!("APP_VERSION")],
-                ))
-                .title(text.dialog_check_updates_title)
-                .buttons(MessageDialogButtons::Ok)
-                .show(|_| {});
-        }
-        "error" => {
-            let text = shell_text();
-            app_handle
-                .dialog()
-                .message(text.dialog_check_error)
-                .title(text.dialog_check_updates_title)
-                .buttons(MessageDialogButtons::Ok)
-                .show(|_| {});
-        }
-        // "updated": the update dialog is already on screen — nothing more to say.
-        _ => {}
-    }
-}
-
-/// Opens the hidden update-check window (`splash/update-check.html`) and arms
-/// the 20s lifetime bound. Shared by the automatic launch-time check and the
-/// "检查更新..." menu item; any window left over from a previous check is
-/// destroyed first so the page always starts fresh.
-fn spawn_update_check(app_handle: &AppHandle) -> Result<(), tauri::Error> {
-    if let Some(existing) = app_handle.get_webview_window("update-check") {
-        let _ = existing.destroy();
-    }
-
-    let result = WebviewWindowBuilder::new(
-        app_handle,
-        "update-check",
-        WebviewUrl::App("update-check.html".into()),
-    )
-    .visible(false)
-    .skip_taskbar(true)
-    .build();
-
-    if result.is_ok() {
-        let handle = app_handle.clone();
-        thread::spawn(move || {
-            thread::sleep(UPDATE_CHECK_MAX_LIFETIME);
-            if let Some(w) = handle.get_webview_window("update-check") {
-                let _ = w.close();
-            }
-        });
-    }
-
-    result.map(|_| ())
 }
 
 // ============================================================================
@@ -1745,16 +275,14 @@ fn main() {
         // directory (which manifested as one window reloading every few
         // seconds while its supervisor "successfully" restarted a backend that
         // could never bind).
-        .plugin(
-            tauri_plugin_single_instance::init(|app, _args, _cwd| {
-                // Bring the already-running instance to the foreground so the
-                // user understands why nothing else opened.
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
-            }),
-        )
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // Bring the already-running instance to the foreground so the
+            // user understands why nothing else opened.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 // The default level is `Trace`, which floods the log file. `Info`
@@ -1812,7 +340,7 @@ fn main() {
             {
                 let app_handle = app_handle.clone();
                 let resource_dir = resource_dir.clone();
-                thread::spawn(move || supervise_backend(app_handle, resource_dir));
+                std::thread::spawn(move || supervise_backend(app_handle, resource_dir));
             }
 
             let server_url = format!("http://127.0.0.1:{}/", port);
@@ -1873,66 +401,62 @@ fn main() {
             // below, once the window exists — see `reveal_maximized`.
             let wants_maximize = window_state.maximized;
 
-            let builder = WebviewWindowBuilder::new(
-                app,
-                "main",
-                splash_url,
-            )
-            .title("Go Magic")
-            .inner_size(window_state.width, window_state.height)
-            .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
-            .position(x, y)
-            .focused(true)
-            .resizable(true)
-            .fullscreen(false)
-            // A window that is about to be maximized is created *hidden*, and on
-            // Windows tao is never asked to maximize it: tao maximizes a hidden
-            // window with `ShowWindow(SW_MAXIMIZE)` and then hides it again right
-            // away, because its stored flags still say "hidden" (`apply_diff` ends
-            // with `ShowWindow(SW_HIDE)` whenever VISIBLE is unset). The window
-            // therefore shows up for an instant and vanishes — the "flashes and
-            // then disappears" of a maximized restore. tao 0.37.0 fixed that
-            // ordering (tao#1306), but every released tauri still pins tao
-            // `^0.35`, so we reveal the window ourselves instead, in a single step
-            // (`reveal_maximized` below). A plain window keeps the default
-            // `visible: true` and appears immediately, exactly as before.
-            .visible(!wants_maximize)
-            // Devtools are enabled in debug builds, and in release builds only
-            // when the `devtools` cargo feature is opted into explicitly.
-            .devtools(cfg!(any(debug_assertions, feature = "devtools")))
-            // Disable Tauri's native drag-drop handler. On Windows it installs
-            // its own IDropTarget on the webview's HWND, which swallows every
-            // drag before WebView2 can turn it into HTML5 events — so pages
-            // never see `dragover`/`drop` and HTML5 drag & drop (kanban cards,
-            // file-drop install zones) silently breaks in packaged builds while
-            // working in a browser. The frontend only uses HTML5 DnD and never
-            // the Tauri drag-drop API, so disabling the handler costs nothing.
-            .disable_drag_drop_handler()
-            .on_navigation({
-                let app_handle_clone = app_handle.clone();
-                move |url| {
-                    // Allow local backend URLs and the shell's own splash page
-                    // (`http://tauri.localhost` on Windows, `tauri://localhost`
-                    // on macOS/Linux); block other navigation and open it in
-                    // the system browser instead.
-                    if is_shell_or_backend_url(&url) {
-                        return true;
+            let builder = WebviewWindowBuilder::new(app, "main", splash_url)
+                .title("Go Magic")
+                .inner_size(window_state.width, window_state.height)
+                .min_inner_size(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+                .position(x, y)
+                .focused(true)
+                .resizable(true)
+                .fullscreen(false)
+                // A window that is about to be maximized is created *hidden*, and on
+                // Windows tao is never asked to maximize it: tao maximizes a hidden
+                // window with `ShowWindow(SW_MAXIMIZE)` and then hides it again right
+                // away, because its stored flags still say "hidden" (`apply_diff` ends
+                // with `ShowWindow(SW_HIDE)` whenever VISIBLE is unset). The window
+                // therefore shows up for an instant and vanishes — the "flashes and
+                // then disappears" of a maximized restore. tao 0.37.0 fixed that
+                // ordering (tao#1306), but every released tauri still pins tao
+                // `^0.35`, so we reveal the window ourselves instead, in a single step
+                // (`reveal_maximized` below). A plain window keeps the default
+                // `visible: true` and appears immediately, exactly as before.
+                .visible(!wants_maximize)
+                // Devtools are enabled in debug builds, and in release builds only
+                // when the `devtools` cargo feature is opted into explicitly.
+                .devtools(cfg!(any(debug_assertions, feature = "devtools")))
+                // Disable Tauri's native drag-drop handler. On Windows it installs
+                // its own IDropTarget on the webview's HWND, which swallows every
+                // drag before WebView2 can turn it into HTML5 events — so pages
+                // never see `dragover`/`drop` and HTML5 drag & drop (kanban cards,
+                // file-drop install zones) silently breaks in packaged builds while
+                // working in a browser. The frontend only uses HTML5 DnD and never
+                // the Tauri drag-drop API, so disabling the handler costs nothing.
+                .disable_drag_drop_handler()
+                .on_navigation({
+                    let app_handle_clone = app_handle.clone();
+                    move |url| {
+                        // Allow local backend URLs and the shell's own splash page
+                        // (`http://tauri.localhost` on Windows, `tauri://localhost`
+                        // on macOS/Linux); block other navigation and open it in
+                        // the system browser instead.
+                        if is_shell_or_backend_url(&url) {
+                            return true;
+                        }
+                        open_external_link(&app_handle_clone, url.as_str());
+                        false
                     }
-                    open_external_link(&app_handle_clone, url.as_str());
-                    false
-                }
-            })
-            .on_new_window({
-                let app_handle_clone = app_handle.clone();
-                move |url, _features| {
-                    // Intercept target="_blank" links and open in system browser
-                    if is_shell_or_backend_url(&url) {
-                        return NewWindowResponse::Allow;
+                })
+                .on_new_window({
+                    let app_handle_clone = app_handle.clone();
+                    move |url, _features| {
+                        // Intercept target="_blank" links and open in system browser
+                        if is_shell_or_backend_url(&url) {
+                            return NewWindowResponse::Allow;
+                        }
+                        open_external_link(&app_handle_clone, url.as_str());
+                        NewWindowResponse::Deny
                     }
-                    open_external_link(&app_handle_clone, url.as_str());
-                    NewWindowResponse::Deny
-                }
-            });
+                });
 
             // tao is only handed the maximized flag where its own ordering is
             // safe. On Windows it is applied while the window is still hidden,
@@ -2051,8 +575,7 @@ fn main() {
                 )?)?;
 
                 // 关于(A): about dialog + quit.
-                let about_submenu =
-                    Submenu::with_id(handle, "about_menu", text.about_menu, true)?;
+                let about_submenu = Submenu::with_id(handle, "about_menu", text.about_menu, true)?;
                 about_submenu.append(&MenuItem::with_id(
                     handle,
                     "about_app",
@@ -2071,7 +594,12 @@ fn main() {
 
                 Menu::with_items(
                     handle,
-                    &[&edit_submenu, &window_submenu, &help_submenu, &about_submenu],
+                    &[
+                        &edit_submenu,
+                        &window_submenu,
+                        &help_submenu,
+                        &about_submenu,
+                    ],
                 )
             })();
             match app_menu {
@@ -2136,7 +664,7 @@ fn main() {
                 let app_handle = app_handle.clone();
                 let window = window.clone();
 
-                thread::spawn(move || {
+                std::thread::spawn(move || {
                     let generation = backend_generation();
 
                     if wait_for_backend_ready(port, Some(generation), &app_handle) {
@@ -2171,20 +699,25 @@ fn main() {
 
                     // Still alive but never answered: nothing has been loaded
                     // yet, so fail loudly rather than leave an empty window.
-                    shutdown_backend();
+                    // Stop the backend on a background thread and exit only
+                    // once it is gone: `stop_backend` blocks for up to the
+                    // full grace period, and doing that synchronously here
+                    // would (a) delay the error dialog and (b) risk the app
+                    // exiting before the backend was actually stopped.
+                    BACKEND_SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let exit_handle = app_handle.clone();
+                    std::thread::spawn(move || {
+                        stop_backend();
+                        exit_handle.exit(1);
+                    });
 
                     let msg = fill(
                         shell_text().dialog_backend_not_ready,
                         &[&HEALTH_CHECK_TIMEOUT.as_secs().to_string()],
                     );
                     log::error!("[backend] {}", msg);
-                    let _ = app_handle
-                        .emit("backend-error", serde_json::json!({ "message": msg }));
-                    show_error_dialog(
-                        &app_handle,
-                        shell_text().dialog_startup_failed,
-                        &msg,
-                    );
+                    let _ = app_handle.emit("backend-error", serde_json::json!({ "message": msg }));
+                    show_error_dialog(&app_handle, shell_text().dialog_startup_failed, &msg);
                     app_handle.exit(1);
                 });
             }
@@ -2243,9 +776,9 @@ fn main() {
                     // The hidden window reports back through
                     // `update_check_finished`, which shows the result dialog
                     // because the manual flag is set.
-                    MANUAL_UPDATE_CHECK.store(true, Ordering::SeqCst);
+                    MANUAL_UPDATE_CHECK.store(true, std::sync::atomic::Ordering::SeqCst);
                     if let Err(e) = spawn_update_check(app) {
-                        MANUAL_UPDATE_CHECK.store(false, Ordering::SeqCst);
+                        MANUAL_UPDATE_CHECK.store(false, std::sync::atomic::Ordering::SeqCst);
                         log::warn!("[update] manual check failed to open window: {}", e);
                         let text = shell_text();
                         app.dialog()
@@ -2312,12 +845,10 @@ fn main() {
                 }
                 "quit_app" => {
                     // Same path as closing the main window: persist geometry
-                    // first (the menu path skips CloseRequested), then flag
-                    // shutdown so the supervisor does not restart the backend
-                    // mid-exit.
+                    // first (the menu path skips CloseRequested), then stop the
+                    // backend off the UI thread and exit once it is gone.
                     save_window_state(app);
-                    shutdown_backend();
-                    app.exit(0);
+                    shutdown_and_exit(app);
                 }
                 _ => {}
             }
@@ -2332,11 +863,11 @@ fn main() {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } => {
                     save_window_state(&app_handle);
-                    // Sets the shutdown flag first, so the supervisor cannot
-                    // interpret the intentional kill as a crash and restart the
-                    // backend while the app is exiting.
-                    shutdown_backend();
-                    app_handle.exit(0);
+                    // Sets the shutdown flag first, then stops the backend on a
+                    // background thread and exits once it is gone — so the
+                    // supervisor cannot restart the backend mid-exit, and the
+                    // UI never freezes on the up-to-10s grace/force/reap path.
+                    shutdown_and_exit(&app_handle);
                 }
                 tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
                     // Debounced: these events fire in bursts while dragging, and
@@ -2349,8 +880,3 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("Failed to run Tauri application");
 }
-
-// Tests live in their own module: `tests.rs`.
-#[cfg(test)]
-mod tests;
-

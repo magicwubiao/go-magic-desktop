@@ -24,7 +24,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Blocking quality gate: fmt, clippy (-D warnings), cargo test, and the
+  # node tests for the update-check version comparison. Runs on Windows to
+  # avoid the Linux webkit/gtk system dependencies — the checks compile the
+  # shell, not a bundle, and no platform-specific code paths are exercised.
+  # Failure here cancels the build job (see `needs` below).
+  lint:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: node test (update-check version compare)
+        run: npm run test:web
+
   build:
+    needs: lint
     strategy:
       fail-fast: false
       matrix:

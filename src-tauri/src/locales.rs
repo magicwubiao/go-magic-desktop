@@ -203,11 +203,11 @@ mod tests {
 
     #[test]
     fn fill_replaces_placeholders_left_to_right() {
-        assert_eq!(fill("版本 {}（{}）", &["1.0", "abc12345"]), "版本 1.0（abc12345）");
         assert_eq!(
-            fill("Update within {}s", &["60"]),
-            "Update within 60s"
+            fill("版本 {}（{}）", &["1.0", "abc12345"]),
+            "版本 1.0（abc12345）"
         );
+        assert_eq!(fill("Update within {}s", &["60"]), "Update within 60s");
     }
 
     #[test]
@@ -276,20 +276,36 @@ mod tests {
         // Count the placeholders in every templated field and require the two
         // tables to agree.
         let pairs: [(&str, &str); 7] = [
-            (ZH_TEXT.dialog_resource_dir_error, EN_TEXT.dialog_resource_dir_error),
-            (ZH_TEXT.dialog_backend_not_found, EN_TEXT.dialog_backend_not_found),
+            (
+                ZH_TEXT.dialog_resource_dir_error,
+                EN_TEXT.dialog_resource_dir_error,
+            ),
+            (
+                ZH_TEXT.dialog_backend_not_found,
+                EN_TEXT.dialog_backend_not_found,
+            ),
             (ZH_TEXT.dialog_invalid_url, EN_TEXT.dialog_invalid_url),
-            (ZH_TEXT.dialog_backend_not_ready, EN_TEXT.dialog_backend_not_ready),
+            (
+                ZH_TEXT.dialog_backend_not_ready,
+                EN_TEXT.dialog_backend_not_ready,
+            ),
             (
                 ZH_TEXT.dialog_backend_not_ready_restart,
                 EN_TEXT.dialog_backend_not_ready_restart,
             ),
-            (ZH_TEXT.dialog_service_stopped, EN_TEXT.dialog_service_stopped),
+            (
+                ZH_TEXT.dialog_service_stopped,
+                EN_TEXT.dialog_service_stopped,
+            ),
             (ZH_TEXT.dialog_about_body, EN_TEXT.dialog_about_body),
             (ZH_TEXT.error_spawn_failed, EN_TEXT.error_spawn_failed),
         ];
         for (zh, en) in pairs {
-            assert_eq!(zh.matches("{}").count(), en.matches("{}").count(), "{zh:?} vs {en:?}");
+            assert_eq!(
+                zh.matches("{}").count(),
+                en.matches("{}").count(),
+                "{zh:?} vs {en:?}"
+            );
         }
         // Two-arg pair check for the update dialog (body has two, notes one).
         assert_eq!(ZH_TEXT.dialog_update_body.matches("{}").count(), 2);
