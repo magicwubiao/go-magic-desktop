@@ -40,7 +40,7 @@ pub(crate) static MANUAL_UPDATE_CHECK: AtomicBool = AtomicBool::new(false);
 /// independent of the window that reported the notice.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct UpdateNotice {
+pub(crate) struct UpdateNotice {
     /// Version the running build reports (`get_app_info`).
     current_version: String,
     /// Version advertised by the remote update manifest.

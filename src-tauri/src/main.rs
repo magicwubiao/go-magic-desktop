@@ -439,7 +439,7 @@ fn main() {
                         // (`http://tauri.localhost` on Windows, `tauri://localhost`
                         // on macOS/Linux); block other navigation and open it in
                         // the system browser instead.
-                        if is_shell_or_backend_url(&url) {
+                        if is_shell_or_backend_url(url) {
                             return true;
                         }
                         open_external_link(&app_handle_clone, url.as_str());

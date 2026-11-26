@@ -1042,6 +1042,9 @@ pub(crate) enum BackendError {
     NoPortAvailable,
     BackendNotFound,
     SpawnFailed(String),
+    /// Constructed only from tests right now (they verify the localized
+    /// Display output); suppressed in non-test builds where it is dead.
+    #[cfg_attr(not(test), expect(dead_code))]
     HealthCheckTimeout,
 }
 
