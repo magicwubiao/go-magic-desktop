@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::{AppHandle, WebviewUrl};
+use tauri::{AppHandle, Manager, WebviewUrl};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
 use crate::locales::{fill, shell_text};

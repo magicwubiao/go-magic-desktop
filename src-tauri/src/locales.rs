@@ -275,7 +275,7 @@ mod tests {
         // whose placeholders drifted apart would render half-filled messages.
         // Count the placeholders in every templated field and require the two
         // tables to agree.
-        let pairs: [(&str, &str); 7] = [
+        let pairs: [(&str, &str); 8] = [
             (
                 ZH_TEXT.dialog_resource_dir_error,
                 EN_TEXT.dialog_resource_dir_error,

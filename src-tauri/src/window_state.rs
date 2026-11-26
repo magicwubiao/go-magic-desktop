@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 pub(crate) const DEFAULT_WINDOW_WIDTH: f64 = 1024.0;
 pub(crate) const DEFAULT_WINDOW_HEIGHT: f64 = 800.0;

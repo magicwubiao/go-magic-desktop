@@ -12,7 +12,7 @@ use std::sync::{Mutex, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::locales::{fill, shell_text};
 
@@ -214,7 +214,7 @@ fn sleep_unless_shutting_down(total: Duration) -> bool {
     BACKEND_SHUTTING_DOWN.load(Ordering::SeqCst)
 }
 
-fn remember_stderr_line(line: &str) {
+pub(crate) fn remember_stderr_line(line: &str) {
     let mut tail = BACKEND_STDERR_TAIL
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
