@@ -607,7 +607,7 @@ pub(crate) fn spawn_backend(resource_dir: &std::path::Path) -> Result<(Child, u1
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
@@ -675,98 +675,20 @@ fn drain_pipes(child: &mut Child) {
 // Process Control
 // --------------------------------------------------------------------------
 
-/// Swallows every console control event while the shell is attached to the
-/// backend's console.
+/// Terminates the backend: force-kill the whole tree immediately, then reap.
 ///
-/// A handler returning non-zero means "handled": the shell must not react to
-/// the CTRL_BREAK broadcast at the backend. Note that the previous trick —
-/// `SetConsoleCtrlHandler(None, TRUE)` — only makes a process ignore
-/// **CTRL_C**; CTRL_BREAK has no NULL-handler shortcut, so the shell used to
-/// terminate itself with its own broadcast.
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn swallow_console_ctrl(_ctrl_type: u32) -> i32 {
-    1 // TRUE: event handled; do not run the default terminator.
-}
-
-/// Asks the backend nicely to shut down, via the console API.
+/// An earlier version tried a "graceful" console signal first
+/// (`AttachConsole` + `GenerateConsoleCtrlEvent(CTRL_BREAK)`), but that whole
+/// path was dead code: a console child spawned with `CREATE_NO_WINDOW` never
+/// gets a console at all ("the console handle for the application is not set"),
+/// so `AttachConsole` failed with `ERROR_INVALID_HANDLE` on every attempt and
+/// execution always fell through to the force kill below. The console FFI only
+/// added risk and complexity, so it is gone.
 ///
-/// The backend is a console program spawned with `CREATE_NO_WINDOW`, so it has
-/// its own (invisible) console. A packaged shell runs windowless and has no
-/// console of its own, so attaching to the child's console and broadcasting
-/// `CTRL_BREAK` reaches exactly the backend and the helper processes that
-/// inherited its console — nothing else on the machine. A Go backend handles
-/// the event like a Ctrl-C and gets a chance to flush its databases; one that
-/// does not handle it still dies with the default handler, i.e. no worse than
-/// the force kill that used to be the only path.
-///
-/// Returns `false` when the signal could not be delivered (typically `tauri
-/// dev`, where the shell already owns the developer's terminal console and
-/// attaching would fail or detach it) — the caller then goes straight to the
-/// force path, exactly like before.
-#[cfg(target_os = "windows")]
-fn request_graceful_console_shutdown(child_pid: u32) -> bool {
-    const CTRL_BREAK_EVENT: u32 = 1;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn AttachConsole(process_id: u32) -> i32;
-        fn FreeConsole() -> i32;
-        fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
-        fn SetConsoleCtrlHandler(
-            handler: Option<unsafe extern "system" fn(u32) -> i32>,
-            add: i32,
-        ) -> i32;
-    }
-
-    // SAFETY: installs [`swallow_console_ctrl`] so the CTRL_BREAK broadcast
-    // below cannot terminate the shell itself. It must be in place before the
-    // broadcast: `GenerateConsoleCtrlEvent` with group id 0 reaches *every*
-    // process sharing our current console, and after `AttachConsole` that
-    // includes us.
-    unsafe {
-        SetConsoleCtrlHandler(Some(swallow_console_ctrl), 1);
-    }
-
-    // SAFETY: attaching to the child's console. Fails cleanly when this process
-    // already has one (`tauri dev`) — the caller falls back to force kill and
-    // the developer's terminal is left untouched.
-    let attached = unsafe { AttachConsole(child_pid) } != 0;
-    if !attached {
-        // Restore the default handling before leaving: the swallow handler
-        // must never stay installed once the shell owns no child console.
-        unsafe {
-            SetConsoleCtrlHandler(Some(swallow_console_ctrl), 0);
-        }
-        return false;
-    }
-
-    // SAFETY: group id 0 broadcasts to every process attached to *our current*
-    // console, which is now the child's — the backend and its helpers. The
-    // shell itself is attached too, but [`swallow_console_ctrl`] neutralises
-    // the event for it.
-    let delivered = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) } != 0;
-
-    // Detach again; the shell has no business holding the child's console.
-    unsafe {
-        FreeConsole();
-    }
-
-    // SAFETY: remove the swallow handler now that the broadcast is over, so a
-    // later console (the dev terminal, a debugger) behaves normally.
-    unsafe {
-        SetConsoleCtrlHandler(Some(swallow_console_ctrl), 0);
-    }
-
-    delivered
-}
-
-/// Terminates the backend: a graceful signal first, a tree force-kill after
-/// [`BACKEND_STOP_TIMEOUT`].
-///
-/// The graceful step gives the Go backend a chance to flush open databases and
-/// in-flight responses before it dies. A backend that ignores the signal — or
-/// an OS call that fails — ends up on the same force path as before, so the
-/// worst case is unchanged, it just starts a few seconds later.
+/// `taskkill /T /F` takes down the backend together with any helper processes
+/// it spawned. The Go backend loses its chance to flush on `SIGTERM`-like
+/// signals, but SQLite-based state survives a hard kill the same way it always
+/// has in practice — this was already the effective behavior.
 pub(crate) fn stop_backend() {
     // Recover from a poisoned lock instead of bailing out: leaving the child
     // running would keep it bound to the port after the app is gone.
@@ -787,66 +709,27 @@ pub(crate) fn stop_backend() {
         state.start_time.elapsed().as_secs_f64()
     );
 
-    // ---- graceful attempt ------------------------------------------------
-    // One `let` per platform: a shared `let mut x = false;` plus cfg blocks
-    // trips the `unused_assignments` lint on Windows, where the initializer is
-    // never read.
-
-    #[cfg(unix)]
-    let signal_sent = {
-        // Negative pid targets the child's whole process group (`spawn_backend`
-        // created one with `process_group(0)`), so helpers the backend spawned
-        // die with it — the Unix counterpart of `taskkill /T`. Fall back to the
-        // single pid if the group call is refused.
-        let pid = state.process.id() as libc::pid_t;
-        let group_killed = unsafe { libc::kill(-pid, libc::SIGTERM) } == 0;
-        group_killed || unsafe { libc::kill(pid, libc::SIGTERM) } == 0
-    };
-
+    // On Windows the Go backend may have helper processes of its own; kill
+    // the whole tree so nothing is left running behind the app's back.
     #[cfg(target_os = "windows")]
-    let signal_sent = request_graceful_console_shutdown(state.process.id());
-
-    // ---- grace period -----------------------------------------------------
-    let mut exited = false;
-    if signal_sent {
-        let deadline = Instant::now() + BACKEND_STOP_TIMEOUT;
-        loop {
-            match state.process.try_wait() {
-                Ok(Some(_)) => {
-                    exited = true;
-                    break;
-                }
-                Ok(None) if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(50));
-                }
-                _ => break,
-            }
-        }
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let _ = Command::new("taskkill")
+            .args(["/PID", &state.process.id().to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
     }
 
-    // ---- force path -------------------------------------------------------
-    if !exited {
-        // On Windows the Go backend may have helper processes of its own; kill
-        // the whole tree so nothing is left running behind the app's back.
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            let _ = Command::new("taskkill")
-                .args(["/PID", &state.process.id().to_string(), "/T", "/F"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .status();
-        }
-
-        // Unix: hard-kill the whole process group, then the child itself.
-        #[cfg(unix)]
-        {
-            let pid = state.process.id() as libc::pid_t;
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
-
-        let _ = state.process.kill();
+    // Unix: kill the whole process group (`spawn_backend` created one with
+    // `process_group(0)`), then the child itself.
+    #[cfg(unix)]
+    {
+        let pid = state.process.id() as libc::pid_t;
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
+
+    let _ = state.process.kill();
 
     // Reap the child, otherwise it stays around as a zombie.
     let deadline = Instant::now() + BACKEND_STOP_TIMEOUT;
@@ -942,22 +825,54 @@ pub(crate) fn restart_backend(app_handle: &AppHandle, resource_dir: &std::path::
         return false;
     }
 
-    // The new instance may have picked a different port, so point the window at
-    // it again.
-    if let Some(window) = app_handle.get_webview_window("main") {
-        if let Ok(url) = format!("http://127.0.0.1:{}/", port).parse::<tauri::Url>() {
-            let _ = window.navigate(url);
-        }
-    }
-
+    // The backend is healthy now: record completion BEFORE touching the
+    // window, so the log always shows the restart outcome. (An earlier
+    // version logged only after the reload — the log went silent whenever
+    // the webview dispatch panicked, and the restart looked like "nothing
+    // happened".)
     log::info!("[backend] restarted on port {}", port);
 
     #[cfg(debug_assertions)]
     println!("Backend restarted on port {}", port);
 
+    // The new instance may have picked a different port, so point the window
+    // at it again. Strictly best-effort, wrapped in an unwind guard: a panic
+    // in the webview dispatch (poisoned runtime locks, destroyed webview)
+    // used to kill this whole background thread with nothing in any log —
+    // the backend was already fine, only the page failed to follow. Now the
+    // panic is recorded and the restart still counts as successful; on the
+    // usual same-port restart the user simply refreshes the page (F5).
+    let reload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(window) = app_handle.get_webview_window("main") {
+            if let Ok(url) = format!("http://127.0.0.1:{}/", port).parse::<tauri::Url>() {
+                let _ = window.navigate(url);
+                return;
+            }
+        }
+        log::warn!("[backend] no main window to reload after restart");
+    }));
+    if let Err(panic) = reload {
+        log::error!(
+            "[backend] window reload after restart panicked: {}",
+            panic_message(&panic)
+        );
+    }
+
     let _ = app_handle.emit("backend-restarted", port);
 
     true
+}
+
+/// Best-effort panic payload extraction for logging: panics carry either a
+/// `&'static str` or a `String`; anything else falls back to a generic line.
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 /// Watches the backend child and brings it back when it dies.
