@@ -675,6 +675,19 @@ fn drain_pipes(child: &mut Child) {
 // Process Control
 // --------------------------------------------------------------------------
 
+/// Swallows every console control event while the shell is attached to the
+/// backend's console.
+///
+/// A handler returning non-zero means "handled": the shell must not react to
+/// the CTRL_BREAK broadcast at the backend. Note that the previous trick —
+/// `SetConsoleCtrlHandler(None, TRUE)` — only makes a process ignore
+/// **CTRL_C**; CTRL_BREAK has no NULL-handler shortcut, so the shell used to
+/// terminate itself with its own broadcast.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn swallow_console_ctrl(_ctrl_type: u32) -> i32 {
+    1 // TRUE: event handled; do not run the default terminator.
+}
+
 /// Asks the backend nicely to shut down, via the console API.
 ///
 /// The backend is a console program spawned with `CREATE_NO_WINDOW`, so it has
@@ -690,19 +703,6 @@ fn drain_pipes(child: &mut Child) {
 /// dev`, where the shell already owns the developer's terminal console and
 /// attaching would fail or detach it) — the caller then goes straight to the
 /// force path, exactly like before.
-/// Swallows every console control event while the shell is attached to the
-/// backend's console.
-///
-/// A handler returning non-zero means "handled": the shell must not react to
-/// the CTRL_BREAK we broadcast at the backend. Note that the previous trick —
-/// `SetConsoleCtrlHandler(None, TRUE)` — only makes a process ignore
-/// **CTRL_C**; CTRL_BREAK has no NULL-handler shortcut, so the shell used to
-/// terminate itself with its own broadcast.
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn swallow_console_ctrl(_ctrl_type: u32) -> i32 {
-    1 // TRUE: event handled; do not run the default terminator.
-}
-
 #[cfg(target_os = "windows")]
 fn request_graceful_console_shutdown(child_pid: u32) -> bool {
     const CTRL_BREAK_EVENT: u32 = 1;
