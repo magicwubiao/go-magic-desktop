@@ -168,6 +168,29 @@ fn a_wildcard_bound_port_is_not_reported_available() {
     assert!(is_port_available(port));
 }
 
+/// A holder that only binds the loopback address must also read as busy.
+///
+/// The wildcard bind probe alone misses this on Windows: a `0.0.0.0:port`
+/// bind succeeds even while another socket owns `127.0.0.1:port`, so the
+/// shell would spawn the backend onto a port that then fails to bind —
+/// the same crash-loop shape as the wildcard-holder regression above.
+/// The connect probe is what catches it.
+#[test]
+fn a_loopback_bound_port_is_not_reported_available() {
+    let listener =
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind ephemeral loopback port");
+    let port = listener.local_addr().unwrap().port();
+
+    assert!(
+        !is_port_available(port),
+        "port {} is held on loopback but reported as available",
+        port
+    );
+
+    drop(listener);
+    assert!(is_port_available(port));
+}
+
 #[test]
 fn backend_errors_have_readable_messages() {
     // Compare against the shell text tables instead of hardcoded strings:

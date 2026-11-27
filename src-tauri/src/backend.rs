@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, TryLockError};
@@ -284,18 +284,57 @@ fn unexpected_backend_exit() -> Option<BackendExit> {
 // Port Management
 // --------------------------------------------------------------------------
 
-/// Probes the port the same way the backend will bind it.
+/// How long a single loopback connect probe may take before the port is
+/// treated as busy anyway. A refusal on a free port is instantaneous; the
+/// timeout only matters for pathological holders (bound socket with a full
+/// accept backlog), where guessing "free" would send the child into the
+/// same bind failure the probe was supposed to prevent.
+const PORT_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Probes the port the same way the backend will bind it, plus the one way
+/// Windows can lie about it.
 ///
-/// The Go backend listens on the wildcard (`:%d`), so the probe must claim the
-/// wildcard too. On Windows a loopback-specific bind (`127.0.0.1:port`)
-/// *succeeds* even while another process already owns the wildcard port — Go
-/// does not set `SO_EXCLUSIVEADDRUSE` — so probing loopback let two app
-/// instances both "verify" port 5000 as free. The second backend then died on
-/// startup, and because the surviving instance's server kept answering the
-/// health probe, the supervisor treated every restart as a success and
-/// reloaded the window every few seconds, forever.
+/// The Go backend listens on the wildcard (`:%d`), so the probe must claim
+/// the wildcard on *both* families — a failing bind is a hard "busy".
+///
+/// The inverse is NOT true on Windows: a *succeeding* bind does not prove
+/// the port is free. Without `SO_EXCLUSIVEADDRUSE` (which neither Rust's
+/// std nor Go sets), Windows happily lets a second `bind()` against an
+/// in-use wildcard port succeed. Verified against a leftover backend that
+/// held `:5000`: the probe bind succeeded, the real child then died with
+/// `WSAEADDRINUSE`, and because the leftover answered the `/health` probe
+/// the supervisor treated every restart as a success — reloading the
+/// window every two seconds, forever. A loopback `connect()` cannot be
+/// fooled this way: any live listener on the port accepts it (or, with a
+/// full backlog, lets it time out — also treated as busy). Only a fast
+/// refusal proves nothing is listening, so both families are probed.
 pub(crate) fn is_port_available(port: u16) -> bool {
-    TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).is_ok()
+    if TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).is_err() {
+        return false;
+    }
+
+    // The dual-stack bind probe only matters on Windows, where the duplicate-
+    // bind quirk below lets a stale AF_INET6 holder slip past the AF_INET
+    // probe. On Unix a duplicate bind fails strictly, and skipping the probe
+    // there keeps IPv6-less kernels (some minimal Linux installs) from
+    // reporting every port as busy.
+    #[cfg(target_os = "windows")]
+    if TcpListener::bind((Ipv6Addr::UNSPECIFIED, port)).is_err() {
+        return false;
+    }
+
+    for addr in [
+        SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+    ] {
+        match TcpStream::connect_timeout(&addr, PORT_PROBE_CONNECT_TIMEOUT) {
+            Ok(_) => return false,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return false,
+            Err(_) => {}
+        }
+    }
+
+    true
 }
 
 pub(crate) fn pick_available_port() -> Option<u16> {
@@ -970,9 +1009,14 @@ pub(crate) fn supervise_backend(app_handle: AppHandle, resource_dir: std::path::
             return;
         }
 
-        if restart_backend(&app_handle, &resource_dir) {
-            failures = 0;
-        }
+        // Deliberately NOT resetting `failures` after a successful restart.
+        // A restart "success" only means the health probe answered while the
+        // child was alive; a port quirk (or a foreign server on the port) can
+        // make every attempt "succeed" while the child keeps dying seconds
+        // later, which produced an endless attempt-1/5 reload loop. The budget
+        // is refunded in the branch above, once the backend has actually
+        // survived a full supervise interval.
+        restart_backend(&app_handle, &resource_dir);
     }
 }
 
