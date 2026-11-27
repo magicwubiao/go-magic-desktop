@@ -284,11 +284,15 @@ fn unexpected_backend_exit() -> Option<BackendExit> {
 // Port Management
 // --------------------------------------------------------------------------
 
-/// How long a single loopback connect probe may take before the port is
-/// treated as busy anyway. A refusal on a free port is instantaneous; the
-/// timeout only matters for pathological holders (bound socket with a full
-/// accept backlog), where guessing "free" would send the child into the
-/// same bind failure the probe was supposed to prevent.
+/// Upper bound on a single loopback connect probe. This is only a latency
+/// cap, NOT a "busy" signal: a free port is *not* guaranteed to refuse the
+/// connect instantly. Firewalls, IPv6-disabled hosts and CI runners can drop
+/// the SYN/RST so the probe times out on a completely idle port. Treating a
+/// timeout as "busy" made every free port read as occupied, so
+/// `pick_available_port` fell through all candidates and the port regression
+/// tests failed right after their holder was dropped. Only an established
+/// connection proves a live listener; refusal, timeout and everything else
+/// are "no listener observed" and fall through to the next probe.
 const PORT_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Probes the port the same way the backend will bind it, plus the one way
@@ -305,9 +309,11 @@ const PORT_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 /// `WSAEADDRINUSE`, and because the leftover answered the `/health` probe
 /// the supervisor treated every restart as a success — reloading the
 /// window every two seconds, forever. A loopback `connect()` cannot be
-/// fooled this way: any live listener on the port accepts it (or, with a
-/// full backlog, lets it time out — also treated as busy). Only a fast
-/// refusal proves nothing is listening, so both families are probed.
+/// fooled this way: a live listener on the port accepts the connection, and
+/// that success is the only reliable proof of a holder. A refusal OR a
+/// timeout means "no listener answered" — a free port can time out too when
+/// SYN/RST packets are filtered, so a timeout must NOT be read as busy.
+/// Both families are probed so an IPv6-only holder is caught as well.
 pub(crate) fn is_port_available(port: u16) -> bool {
     if TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).is_err() {
         return false;
@@ -327,10 +333,16 @@ pub(crate) fn is_port_available(port: u16) -> bool {
         SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
         SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
     ] {
-        match TcpStream::connect_timeout(&addr, PORT_PROBE_CONNECT_TIMEOUT) {
-            Ok(_) => return false,
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return false,
-            Err(_) => {}
+        // An established connection is the only proof a live listener holds
+        // the port — including the Windows bind-lie case above. Everything
+        // else (ConnectionRefused, TimedOut, network-unreachable, ...) means
+        // "no listener observed" and must fall through. A free port is NOT
+        // guaranteed to refuse quickly: filtered SYN/RST (firewalls,
+        // IPv6-disabled hosts, CI runners) make an idle port time out too, so
+        // reading a timeout as busy would mark every free port occupied and
+        // starve `pick_available_port` of all candidates.
+        if TcpStream::connect_timeout(&addr, PORT_PROBE_CONNECT_TIMEOUT).is_ok() {
+            return false;
         }
     }
 
