@@ -690,6 +690,19 @@ fn drain_pipes(child: &mut Child) {
 /// dev`, where the shell already owns the developer's terminal console and
 /// attaching would fail or detach it) — the caller then goes straight to the
 /// force path, exactly like before.
+/// Swallows every console control event while the shell is attached to the
+/// backend's console.
+///
+/// A handler returning non-zero means "handled": the shell must not react to
+/// the CTRL_BREAK we broadcast at the backend. Note that the previous trick —
+/// `SetConsoleCtrlHandler(None, TRUE)` — only makes a process ignore
+/// **CTRL_C**; CTRL_BREAK has no NULL-handler shortcut, so the shell used to
+/// terminate itself with its own broadcast.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn swallow_console_ctrl(_ctrl_type: u32) -> i32 {
+    1 // TRUE: event handled; do not run the default terminator.
+}
+
 #[cfg(target_os = "windows")]
 fn request_graceful_console_shutdown(child_pid: u32) -> bool {
     const CTRL_BREAK_EVENT: u32 = 1;
@@ -705,11 +718,13 @@ fn request_graceful_console_shutdown(child_pid: u32) -> bool {
         ) -> i32;
     }
 
-    // SAFETY: `SetConsoleCtrlHandler(None, TRUE)` installs the "ignore" handler
-    // for this process. It must run before the broadcast below, otherwise the
-    // CTRL_BREAK aimed at the backend would terminate the shell itself.
+    // SAFETY: installs [`swallow_console_ctrl`] so the CTRL_BREAK broadcast
+    // below cannot terminate the shell itself. It must be in place before the
+    // broadcast: `GenerateConsoleCtrlEvent` with group id 0 reaches *every*
+    // process sharing our current console, and after `AttachConsole` that
+    // includes us.
     unsafe {
-        SetConsoleCtrlHandler(None, 1);
+        SetConsoleCtrlHandler(Some(swallow_console_ctrl), 1);
     }
 
     // SAFETY: attaching to the child's console. Fails cleanly when this process
@@ -717,16 +732,29 @@ fn request_graceful_console_shutdown(child_pid: u32) -> bool {
     // the developer's terminal is left untouched.
     let attached = unsafe { AttachConsole(child_pid) } != 0;
     if !attached {
+        // Restore the default handling before leaving: the swallow handler
+        // must never stay installed once the shell owns no child console.
+        unsafe {
+            SetConsoleCtrlHandler(Some(swallow_console_ctrl), 0);
+        }
         return false;
     }
 
     // SAFETY: group id 0 broadcasts to every process attached to *our current*
-    // console, which is now the child's — the backend and its helpers.
+    // console, which is now the child's — the backend and its helpers. The
+    // shell itself is attached too, but [`swallow_console_ctrl`] neutralises
+    // the event for it.
     let delivered = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0) } != 0;
 
     // Detach again; the shell has no business holding the child's console.
     unsafe {
         FreeConsole();
+    }
+
+    // SAFETY: remove the swallow handler now that the broadcast is over, so a
+    // later console (the dev terminal, a debugger) behaves normally.
+    unsafe {
+        SetConsoleCtrlHandler(Some(swallow_console_ctrl), 0);
     }
 
     delivered
